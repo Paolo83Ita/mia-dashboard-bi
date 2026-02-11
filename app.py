@@ -9,20 +9,20 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (MOBILE & CONTRASTO) ---
+# --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v20",
-    page_icon="🎯",
+    page_title="EITA Analytics Pro v21",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS per Mobile, contrasto forzato e layout KPI
+# CSS ottimizzato per Mobile e Contrasto (v16 logic with UI fixes)
 st.markdown("""
 <style>
     .block-container {padding-top: 1rem; padding-bottom: 3rem;}
     
-    /* KPI CARDS: Forza sfondo bianco e testo scuro per Mobile/Dark Mode */
+    /* KPI CARDS: Forza contrasto e bordi per Mobile */
     div[data-testid="stMetric"] {
         background-color: #ffffff !important;
         border: 1px solid #e0e0e0;
@@ -32,27 +32,28 @@ st.markdown("""
         border-radius: 8px;
     }
     
+    /* Forza colore testo per evitare scritte bianche in Dark Mode */
     [data-testid="stMetricLabel"] {
         color: #555555 !important; 
         font-weight: 600;
-        font-size: 0.85rem !important;
+        font-size: 0.9rem !important;
     }
     [data-testid="stMetricValue"] {
         color: #111111 !important; 
         font-weight: 800;
-        font-size: 1.4rem !important;
+        font-size: 1.5rem !important;
     }
     
     h1, h2, h3 {font-family: 'Segoe UI', sans-serif; color: #004e92 !important;}
     
-    /* Ottimizzazione tabelle e menu */
-    .stDataFrame { border: 1px solid #eee; border-radius: 8px; }
-
-    /* Media query per dispositivi mobili */
     @media (max-width: 640px) {
         .block-container {padding-left: 0.5rem; padding-right: 0.5rem;}
-        div[data-testid="stMetric"] { margin-bottom: 10px; }
-        [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
+        div[data-testid="stMetric"] {
+            margin-bottom: 10px;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 1.3rem !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -95,50 +96,50 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA DATI ---
+# --- FUNZIONE DI PULIZIA (Ripristinata v16) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
-    # Colonne target numeriche basate sulla legenda fornita
     target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto']
     
     for col in df.columns:
         if col in ['Numero_Pallet', 'Sovrapponibile']: continue 
-        
-        # Pulizia numeri italiani (1.234,56 -> 1234.56)
-        if any(t in col for t in target_numeric_cols) or df[col].dtype == 'object':
-            sample = df[col].dropna().astype(str).head(50).tolist()
-            if any(c.isdigit() for s in sample for c in s):
-                try:
-                    clean_col = df[col].astype(str).str.replace('€', '').str.replace(' ', '')
-                    if clean_col.str.contains(',', regex=False).any():
-                        clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-                    df[col] = pd.to_numeric(clean_col, errors='coerce').fillna(0)
-                except: pass
-        
+        sample = df[col].dropna().astype(str).head(100).tolist()
+        if not sample: continue
+
         # Conversione Date
-        if "Data" in col or df[col].dtype == 'object':
+        if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
             try:
                 df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                continue 
             except: pass
-            
+        
+        # Conversione Numeri
+        is_target_numeric = any(t in col for t in target_numeric_cols)
+        looks_numeric = any(c.isdigit() for s in sample for c in s)
+        if is_target_numeric or looks_numeric:
+            try:
+                clean_col = df[col].astype(str).str.replace('€', '').str.replace(' ', '')
+                if clean_col.str.contains(',', regex=False).any():
+                    clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+                converted = pd.to_numeric(clean_col, errors='coerce')
+                if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
+                    df[col] = converted.fillna(0)
+            except: pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE (V20)
+# LOGICA DI AUTO-ASSEGNAZIONE (Basata su Legenda v16)
 def guess_column_role(df):
     cols = df.columns
     guesses = {'entity': None, 'customer': None, 'product': None, 'euro': None, 'kg': None, 'cartons': None, 'date': None}
-    
-    # Priorità assoluta basata sulla legenda dell'utente
     golden_rules = {
         'euro': ['Importo_Netto_TotRiga'], 
         'kg': ['Peso_Netto_TotRiga'],
         'cartons': ['Qta_Cartoni_Ordinato'],
         'date': ['Data_Ordine', 'Data_Fattura'], 
         'entity': ['Entity'],
-        'customer': ['Descr_Cliente_Fat'], # Richiesta specifica: Ragione Sociale Fatturazione
+        'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest'],
         'product': ['Descr_Articolo']
     }
-    
     for role, targets in golden_rules.items():
         for t in targets:
             if t in cols:
@@ -146,22 +147,22 @@ def guess_column_role(df):
                 break
     return guesses
 
-# --- 3. SIDEBAR E FILTRI ---
-st.sidebar.title("💎 Control Panel v20")
+# --- 3. SIDEBAR ---
+st.sidebar.title("💎 Control Panel v21")
 files, service = get_drive_files_list()
 df_processed = None
 
 if files:
     file_map = {f['name']: f for f in files}
     target_file = "From_Order_to_Invoice"
-    default_index = 0
     file_list = list(file_map.keys())
+    default_index = 0
     for i, fname in enumerate(file_list):
         if target_file.lower() in fname.lower():
             default_index = i
             break
             
-    sel_file_name = st.sidebar.selectbox("1. File Sorgente", file_list, index=default_index)
+    sel_file_name = st.sidebar.selectbox("1. Sorgente Dati", file_list, index=default_index)
     selected_file_obj = file_map[sel_file_name]
     
     with st.spinner('Accesso al Cloud...'):
@@ -175,7 +176,7 @@ if df_processed is not None:
     guesses = guess_column_role(df_processed)
     all_cols = df_processed.columns.tolist()
 
-    with st.sidebar.expander("2. Verifica Colonne", expanded=False):
+    with st.sidebar.expander("2. Mappatura Colonne", expanded=False):
         def set_idx(guess, options): return options.index(guess) if guess in options else 0
         col_entity = st.selectbox("Entità", all_cols, index=set_idx(guesses['entity'], all_cols))
         col_customer = st.selectbox("Cliente (Fatturazione)", all_cols, index=set_idx(guesses['customer'], all_cols))
@@ -185,7 +186,7 @@ if df_processed is not None:
         col_cartons = st.selectbox("Cartoni (Qty)", all_cols, index=set_idx(guesses['cartons'], all_cols))
         col_data = st.selectbox("Data Riferimento", all_cols, index=set_idx(guesses['date'], all_cols))
 
-    st.sidebar.subheader("3. Filtri")
+    st.sidebar.subheader("3. Filtri Base")
     df_global = df_processed.copy()
     
     if col_entity:
@@ -199,8 +200,8 @@ if df_processed is not None:
         d_start, d_end = st.sidebar.date_input("Periodo Analisi", [def_start, def_end], format="DD/MM/YYYY")
         df_global = df_global[(df_global[col_data].dt.date >= d_start) & (df_global[col_data].dt.date <= d_end)]
 
-    # Filtro dinamico per altri campi (es. Vettore, Key Account)
-    st.sidebar.markdown("---")
+    # Filtri Avanzati Multi-selezione (Ripristinati)
+    st.sidebar.subheader("4. Filtri Avanzati")
     possible_filters = [c for c in all_cols if c not in [col_euro, col_kg, col_cartons, col_data, col_entity]]
     filters_selected = st.sidebar.multiselect("Aggiungi Filtri Extra:", possible_filters)
     for f_col in filters_selected:
@@ -213,24 +214,22 @@ if df_processed is not None:
 st.title(f"📊 Report: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
 
 if df_processed is not None and not df_global.empty:
-    # --- KPI HEADER ---
-    kpi_euro = df_global[col_euro].sum()
-    kpi_kg = df_global[col_kg].sum()
+    # --- KPI MACRO ---
+    tot_euro = df_global[col_euro].sum()
+    tot_kg = df_global[col_kg].sum()
     
-    # Conteggio ordini univoci
     col_ord_num = next((c for c in df_global.columns if "Numero_Ordine" in c), None)
-    kpi_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
+    tot_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
     
-    # Top Cliente
     top_c_data = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(1)
     top_name = top_c_data.index[0] if not top_c_data.empty else "-"
     top_val = top_c_data.values[0] if not top_c_data.empty else 0
     
     c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("1. Fatturato Totale", f"€ {kpi_euro:,.2f}")
-    with c2: st.metric("2. Quantità Totale", f"{kpi_kg:,.0f} Kg")
-    with c3: st.metric("3. N° Ordini", f"{kpi_orders:,}")
-    with c4: st.metric("4. Top Cliente", top_name[:15]+".." if len(str(top_name))>15 else top_name, f"€ {top_val:,.0f}")
+    with c1: st.metric("Fatturato Totale", f"€ {tot_euro:,.2f}")
+    with c2: st.metric("Quantità Totale", f"{tot_kg:,.0f} Kg")
+    with c3: st.metric("N° Ordini", f"{tot_orders:,}")
+    with c4: st.metric("Top Cliente", top_name[:15]+".." if len(str(top_name))>15 else top_name, f"€ {top_val:,.0f}")
 
     st.markdown("---")
     
@@ -239,7 +238,7 @@ if df_processed is not None and not df_global.empty:
     
     col_l, col_r = st.columns([1, 1.8])
     
-    # Preparazione lista clienti ordinata per fatturato
+    # Ranking clienti ordinato
     cust_totals = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
     total_val_period = df_global[col_euro].sum()
     options = ["TUTTI I CLIENTI"] + cust_totals.index.tolist()
@@ -247,7 +246,7 @@ if df_processed is not None and not df_global.empty:
     with col_l:
         st.info("💡 Digita per cercare un cliente")
         sel_target = st.selectbox(
-            "Seleziona Analisi:", 
+            "Seleziona Target (Ordinati per Fatturato):", 
             options,
             format_func=lambda x: f"{x} (€ {total_val_period:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {cust_totals[x]:,.0f})"
         )
@@ -260,56 +259,47 @@ if df_processed is not None and not df_global.empty:
             
             if chart_type == "Barre":
                 fig = px.bar(prod_agg, x=col_euro, y=col_prod, orientation='h', text_auto='.2s')
-                fig.update_layout(height=380, yaxis=dict(autorange="reversed"), margin=dict(l=0,r=10,t=10,b=10), xaxis_title=None, yaxis_title=None)
+                fig.update_layout(height=400, yaxis=dict(autorange="reversed"), margin=dict(l=0,r=10,t=10,b=10), xaxis_title=None, yaxis_title=None)
                 fig.update_traces(marker_color='#004e92')
             else:
                 fig = px.pie(prod_agg, values=col_euro, names=col_prod, hole=0.4 if chart_type=="Donut" else 0)
                 fig.update_traces(textposition='outside', textinfo='percent+label', textfont_size=11)
-                fig.update_layout(height=400, margin=dict(l=0,r=0,t=30,b=10), showlegend=False)
+                fig.update_layout(height=420, margin=dict(l=0,r=0,t=30,b=10), showlegend=False)
             
             st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
         if sel_target == "TUTTI I CLIENTI":
-            st.markdown("#### 💥 Esplosione Prodotto (Dettaglio Clienti Fatturazione)")
-            all_p = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
-            sel_p = st.selectbox("Seleziona Prodotto per Drill-Down:", all_p.index.tolist(), format_func=lambda x: f"{x} (Tot: € {all_p[x]:,.0f})")
+            st.markdown("#### 💥 Esplosione Prodotto")
+            all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
+            sel_p = st.selectbox("Seleziona Prodotto:", all_p_sorted.index.tolist(), format_func=lambda x: f"{x} (Tot: € {all_p_sorted[x]:,.0f})")
             
             if sel_p:
                 df_ps = df_target[df_target[col_prod] == sel_p]
-                # Aggregazione su col_customer che è mappato su Descr_Cliente_Fat
                 cb = df_ps.groupby(col_customer).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
-                prod_val = cb[col_euro].sum()
-                cb['% su Prodotto'] = (cb[col_euro] / prod_val * 100)
-                
                 st.dataframe(
                     cb, 
                     column_config={
-                        col_customer: "Ragione Sociale Fatturazione",
+                        col_customer: "Ragione Sociale",
                         col_cartons: st.column_config.NumberColumn("Cartoni"),
                         col_kg: st.column_config.NumberColumn("Kg"),
-                        col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
-                        "% su Prodotto": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
+                        col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f")
                     }, 
                     hide_index=True, use_container_width=True, height=500
                 )
         else:
             st.markdown(f"#### Riepilogo Acquisti: **{sel_target}**")
             ps = df_target.groupby(col_prod).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
-            tot_val_cust = ps[col_euro].sum()
-            ps['%'] = (ps[col_euro] / tot_val_cust * 100)
-            
             st.dataframe(
                 ps, 
                 column_config={
                     col_prod: "Articolo",
                     col_cartons: st.column_config.NumberColumn("Cartoni"),
-                    col_kg: st.column_config.NumberColumn("Kg Totali"),
-                    col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
-                    "%": st.column_config.ProgressColumn("% Peso", format="%.1f%%", min_value=0, max_value=100)
+                    col_kg: st.column_config.NumberColumn("Kg"),
+                    col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f")
                 }, 
                 hide_index=True, use_container_width=True, height=500
             )
 
 elif df_processed is not None:
-    st.warning("Nessun dato trovato nel periodo selezionato. Prova ad allargare le date o cambiare filtri.")
+    st.warning("Nessun dato trovato. Controlla i filtri.")
