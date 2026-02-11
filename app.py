@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v17",
+    page_title="EITA Analytics Pro v18",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,45 +80,23 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V17 - Safe Numerics) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V18 - Bulletproof) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
-    target_numeric_cols = [
-        'Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 
-        'Qta_Cartoni_Ordinato', 'Prezzo_Netto'
-    ]
-    
+    # Pulizia preliminare
     for col in df.columns:
         if col in ['Numero_Pallet', 'Sovrapponibile']: continue 
-
-        sample = df[col].dropna().astype(str).head(100).tolist()
-        if not sample: continue
-
-        # A. DATE
-        if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
-            try:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
-                continue 
-            except:
-                pass
         
-        # B. NUMERI
-        is_target_numeric = any(t in col for t in target_numeric_cols)
-        looks_numeric = any(c.isdigit() for s in sample for c in s)
-
-        if is_target_numeric or looks_numeric:
-            try:
-                clean_col = df[col].astype(str).str.replace('€', '').str.replace(' ', '')
-                if clean_col.str.contains(',', regex=False).any():
-                    clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-                
-                converted = pd.to_numeric(clean_col, errors='coerce')
-                
-                if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
-                    df[col] = converted.fillna(0)
-            except:
-                pass
+        # Gestione Date
+        if df[col].dtype == 'object':
+            # Euristiche semplici per date
+            sample = df[col].dropna().astype(str).head(20).tolist()
+            if sample and any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
+                try:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                except:
+                    pass
     return df
 
 # LOGICA DI AUTO-ASSEGNAZIONE
@@ -147,20 +125,15 @@ def guess_column_role(df):
     
     # Fallback
     for col in cols:
-        col_lower = col.lower()
         if any(guesses.values()) and col in guesses.values(): continue
-
         if not guesses['date'] and pd.api.types.is_datetime64_any_dtype(df[col]):
             guesses['date'] = col
             continue
 
-        if pd.api.types.is_numeric_dtype(df[col]):
-            pass 
-
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v17")
+st.sidebar.title("💎 Control Panel v18")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -238,7 +211,7 @@ if df_processed is not None:
         if sel_custs:
             df_global = df_global[df_global[col_customer].astype(str).isin(sel_custs)]
 
-    # D. FILTRI AVANZATI (ANTI-CRASH)
+    # D. FILTRI AVANZATI (SAFE)
     st.sidebar.markdown("---")
     st.sidebar.subheader("4. Filtri Avanzati")
     
@@ -247,20 +220,13 @@ if df_processed is not None:
     filters_selected = st.sidebar.multiselect("Aggiungi criterio di filtro:", possible_filters)
     
     for f_col in filters_selected:
-        # 1. CONTROLLO CARDINALITÀ (Evita crash browser)
         unique_vals_count = df_global[f_col].nunique()
-        
         if unique_vals_count > 1000:
-            st.sidebar.warning(f"⚠️ '{f_col}': troppi valori ({unique_vals_count}). Usa la ricerca:")
-            # Ricerca testuale invece di menu a tendina
             search_query = st.sidebar.text_input(f"Cerca in {f_col}", key=f"search_{f_col}")
             if search_query:
-                # Filtra se contiene il testo (case insensitive)
                 df_global = df_global[df_global[f_col].astype(str).str.contains(search_query, case=False, na=False)]
         else:
-            # Menu normale se pochi valori
             unique_vals = sorted(df_global[f_col].astype(str).unique())
-            # KEY UNICA per evitare errori di stato Streamlit
             sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals, key=f"filter_{f_col}")
             if sel_vals:
                 df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
@@ -271,14 +237,34 @@ st.title(f"📊 Report: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
 
 if df_processed is not None and not df_global.empty:
 
-    # --- KPI MACRO SAFE ---
-    # Forza conversione a numerico per evitare errori di somma stringhe
+    # --- FASE CRITICA: PULIZIA E CASTING DEI DATI PRIMA DEI CALCOLI ---
+    # Questa sezione trasforma tutto in numeri puri. Se esplode qui, non è colpa dei grafici.
     try:
-        kpi_euro = pd.to_numeric(df_global[col_euro], errors='coerce').sum()
-        kpi_kg = pd.to_numeric(df_global[col_kg], errors='coerce').sum()
-    except:
-        kpi_euro = 0
-        kpi_kg = 0
+        # Funzione helper per pulire valuta e numeri italiani
+        def clean_currency(series):
+            return pd.to_numeric(
+                series.astype(str).str.replace('€', '').str.replace(' ', '').str.replace('.', '').str.replace(',', '.'),
+                errors='coerce'
+            ).fillna(0)
+
+        # Sovrascriviamo le colonne nel dataframe globale con versioni sicure
+        df_global[col_euro] = clean_currency(df_global[col_euro])
+        df_global[col_kg] = clean_currency(df_global[col_kg])
+        df_global[col_cartons] = clean_currency(df_global[col_cartons])
+        
+        # Forziamo cliente e prodotto a stringa (evita errori se sono numeri)
+        if col_customer:
+            df_global[col_customer] = df_global[col_customer].astype(str).fillna("-")
+        if col_prod:
+            df_global[col_prod] = df_global[col_prod].astype(str).fillna("-")
+
+    except Exception as e:
+        st.error(f"Errore nella pulizia dati preliminare: {e}")
+        st.stop() # Ferma tutto se la pulizia base fallisce
+
+    # --- KPI MACRO ---
+    kpi_euro = df_global[col_euro].sum()
+    kpi_kg = df_global[col_kg].sum()
     
     col_ord_num = next((c for c in df_global.columns if "Numero_Ordine" in c), None)
     kpi_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
@@ -286,14 +272,9 @@ if df_processed is not None and not df_global.empty:
     
     # Top Cliente
     if col_customer:
-        try:
-            # Raggruppa assicurandosi che i valori siano numerici
-            df_global['safe_euro'] = pd.to_numeric(df_global[col_euro], errors='coerce').fillna(0)
-            top_client_row = df_global.groupby(col_customer)['safe_euro'].sum().sort_values(ascending=False).head(1)
-            top_client_name = top_client_row.index[0] if not top_client_row.empty else "-"
-            top_client_val = top_client_row.values[0] if not top_client_row.empty else 0
-        except:
-             top_client_name, top_client_val = "Errore Dati", 0
+        top_client_row = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(1)
+        top_client_name = top_client_row.index[0] if not top_client_row.empty else "-"
+        top_client_val = top_client_row.values[0] if not top_client_row.empty else 0
     else:
         top_client_name, top_client_val = "-", 0
     
@@ -313,10 +294,8 @@ if df_processed is not None and not df_global.empty:
     # PREPARAZIONE DATI
     if col_customer:
         try:
-            # Ricalcolo sicuro per le liste
-            df_global['safe_euro'] = pd.to_numeric(df_global[col_euro], errors='coerce').fillna(0)
-            top_cust_list = df_global.groupby(col_customer)['safe_euro'].sum().sort_values(ascending=False)
-            total_euro_all = df_global['safe_euro'].sum()
+            top_cust_list = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
+            total_euro_all = df_global[col_euro].sum()
             
             options = ["TUTTI I CLIENTI"] + top_cust_list.index.tolist()
             
@@ -460,7 +439,7 @@ if df_processed is not None and not df_global.empty:
                             height=500
                         )
         except Exception as e:
-            st.error(f"Errore calcolo dettagli: {str(e)}")
+            st.warning(f"Si è verificato un errore nel calcolo dei dettagli: {e}")
 
 elif df_processed is not None:
     st.warning("Nessun dato trovato nel periodo selezionato.")
