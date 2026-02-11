@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v13",
+    page_title="EITA Analytics Pro v14",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,7 +80,7 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V13) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V14) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
@@ -121,7 +121,7 @@ def smart_analyze_and_clean(df_in):
                 pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE (V13)
+# LOGICA DI AUTO-ASSEGNAZIONE (V14)
 def guess_column_role(df):
     cols = df.columns
     guesses = {
@@ -159,7 +159,7 @@ def guess_column_role(df):
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v13")
+st.sidebar.title("💎 Control Panel v14")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -237,27 +237,17 @@ if df_processed is not None:
         if sel_custs:
             df_global = df_global[df_global[col_customer].astype(str).isin(sel_custs)]
 
-    # D. FILTRI AVANZATI (NUOVO)
+    # D. FILTRI AVANZATI
     st.sidebar.markdown("---")
     st.sidebar.subheader("4. Filtri Avanzati")
     
-    # Colonne escluse dalla selezione filtri (per evitare ridondanza o crash su colonne numeriche pure)
     cols_to_exclude = [col_euro, col_kg, col_cartons, col_data]
-    # Lista colonne filtrabili (tutte meno quelle numeriche/data già gestite)
     possible_filters = [c for c in all_cols if c not in cols_to_exclude]
-    
-    # Multiselect per scegliere QUALI filtri aggiungere
     filters_selected = st.sidebar.multiselect("Aggiungi criterio di filtro:", possible_filters)
     
-    # Generazione dinamica dei filtri scelti
     for f_col in filters_selected:
-        # Recupera valori unici dal dataset ATTUALE (già filtrato dai passaggi precedenti)
-        # Questo crea l'effetto "Cascata"
         unique_vals = sorted(df_global[f_col].astype(str).unique())
-        
-        # Multiselect per i valori
         sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals)
-        
         if sel_vals:
             df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
 
@@ -296,102 +286,114 @@ if df_processed is not None and not df_global.empty:
     
     col_left, col_right = st.columns([1, 2])
     
-    with col_left:
-        st.markdown("#### Seleziona Cliente")
+    # PREPARAZIONE DATI PER SELEZIONE CLIENTE (o TUTTI)
+    if col_customer:
         top_cust_list = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
         
-        sel_target_cust = st.selectbox(
-            "Cliente:", 
-            top_cust_list.index.tolist(),
-            format_func=lambda x: f"{x} (€ {top_cust_list[x]:,.0f})"
-        )
+        # --- MODIFICA V14: AGGIUNTA OPZIONE "TUTTI I CLIENTI" ---
+        total_euro_all = df_global[col_euro].sum()
         
-        # --- GRAFICO DINAMICO ---
-        if sel_target_cust:
-            st.write("") 
-            # Selettore Tipo Grafico
-            chart_type = st.radio("Tipo Visualizzazione:", ["Barre", "Torta", "Donut"], horizontal=True, label_visibility="collapsed")
+        # Creiamo la lista opzioni con "TUTTI" in testa
+        options = ["TUTTI I CLIENTI"] + top_cust_list.index.tolist()
+        
+        with col_left:
+            st.markdown("#### Seleziona Cliente")
             
-            df_c = df_global[df_global[col_customer] == sel_target_cust]
-            
-            # Aggregazione per Prodotto
-            prod_chart_data = df_c.groupby(col_prod).agg({
-                col_euro: 'sum',
-                col_kg: 'sum',
-                col_cartons: 'sum'
-            }).reset_index().sort_values(col_euro, ascending=False).head(10) # Top 10
-            
-            if chart_type == "Barre":
-                fig = px.bar(
-                    prod_chart_data, 
-                    x=col_euro, 
-                    y=col_prod, 
-                    orientation='h',
-                    title="Top 10 Prodotti (per Valore €)",
-                    text_auto='.2s',
-                    hover_data={
-                        col_euro: ':,.2f',
-                        col_kg: ':,.0f',
-                        col_cartons: ':,.0f'
-                    }
-                )
-                fig.update_layout(
-                    height=400, 
-                    yaxis=dict(autorange="reversed"),
-                    margin=dict(l=0,r=0,t=30,b=0),
-                    xaxis_title="Fatturato (€)",
-                    yaxis_title=None
-                )
-                fig.update_traces(marker_color='#004e92')
-            
-            elif chart_type in ["Torta", "Donut"]:
-                hole_size = 0.4 if chart_type == "Donut" else 0
-                fig = px.pie(
-                    prod_chart_data,
-                    values=col_euro,
-                    names=col_prod,
-                    title="Top 10 Prodotti (Quota Fatturato)",
-                    hole=hole_size,
-                    hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
-                )
-                fig.update_layout(
-                    height=400,
-                    margin=dict(l=0,r=0,t=30,b=0),
-                    showlegend=False
-                )
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-
-            st.plotly_chart(fig, use_container_width=True)
-
-    with col_right:
-        if sel_target_cust:
-            st.markdown(f"#### Dettaglio Completo: **{sel_target_cust}**")
-            
-            df_det = df_global[df_global[col_customer] == sel_target_cust]
-            
-            # Pivot prodotti completo
-            prod_stats = df_det.groupby(col_prod).agg({
-                col_cartons: 'sum',
-                col_kg: 'sum',
-                col_euro: 'sum'
-            }).reset_index().sort_values(col_euro, ascending=False)
-            
-            tot_val = prod_stats[col_euro].sum()
-            prod_stats['%'] = (prod_stats[col_euro] / tot_val * 100)
-            
-            st.dataframe(
-                prod_stats,
-                column_config={
-                    col_prod: "Prodotto",
-                    col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
-                    col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
-                    col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
-                    "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
-                },
-                hide_index=True,
-                use_container_width=True,
-                height=500
+            sel_target_cust = st.selectbox(
+                "Cliente:", 
+                options,
+                format_func=lambda x: f"{x} (€ {total_euro_all:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {top_cust_list[x]:,.0f})"
             )
+            
+            # --- PREPARAZIONE DATASET TARGET (Singolo o Globale) ---
+            if sel_target_cust == "TUTTI I CLIENTI":
+                df_target = df_global # Usa tutto il dataset filtrato
+                chart_title_suffix = "TUTTI I CLIENTI"
+            else:
+                df_target = df_global[df_global[col_customer] == sel_target_cust]
+                chart_title_suffix = sel_target_cust
+
+            # --- GRAFICO DINAMICO ---
+            if not df_target.empty:
+                st.write("") 
+                chart_type = st.radio("Tipo Visualizzazione:", ["Barre", "Torta", "Donut"], horizontal=True, label_visibility="collapsed")
+                
+                # Aggregazione per Prodotto
+                prod_chart_data = df_target.groupby(col_prod).agg({
+                    col_euro: 'sum',
+                    col_kg: 'sum',
+                    col_cartons: 'sum'
+                }).reset_index().sort_values(col_euro, ascending=False).head(10) # Top 10
+                
+                if chart_type == "Barre":
+                    fig = px.bar(
+                        prod_chart_data, 
+                        x=col_euro, 
+                        y=col_prod, 
+                        orientation='h',
+                        title=f"Top 10 Prodotti ({chart_title_suffix})",
+                        text_auto='.2s',
+                        hover_data={
+                            col_euro: ':,.2f',
+                            col_kg: ':,.0f',
+                            col_cartons: ':,.0f'
+                        }
+                    )
+                    fig.update_layout(
+                        height=400, 
+                        yaxis=dict(autorange="reversed"),
+                        margin=dict(l=0,r=0,t=30,b=0),
+                        xaxis_title="Fatturato (€)",
+                        yaxis_title=None
+                    )
+                    fig.update_traces(marker_color='#004e92')
+                
+                elif chart_type in ["Torta", "Donut"]:
+                    hole_size = 0.4 if chart_type == "Donut" else 0
+                    fig = px.pie(
+                        prod_chart_data,
+                        values=col_euro,
+                        names=col_prod,
+                        title=f"Top 10 Prodotti ({chart_title_suffix})",
+                        hole=hole_size,
+                        hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
+                    )
+                    fig.update_layout(
+                        height=400,
+                        margin=dict(l=0,r=0,t=30,b=0),
+                        showlegend=False
+                    )
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+
+                st.plotly_chart(fig, use_container_width=True)
+
+        with col_right:
+            if not df_target.empty:
+                st.markdown(f"#### Dettaglio Completo: **{chart_title_suffix}**")
+                
+                # Pivot prodotti completo
+                prod_stats = df_target.groupby(col_prod).agg({
+                    col_cartons: 'sum',
+                    col_kg: 'sum',
+                    col_euro: 'sum'
+                }).reset_index().sort_values(col_euro, ascending=False)
+                
+                tot_val = prod_stats[col_euro].sum()
+                prod_stats['%'] = (prod_stats[col_euro] / tot_val * 100)
+                
+                st.dataframe(
+                    prod_stats,
+                    column_config={
+                        col_prod: "Prodotto",
+                        col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
+                        col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
+                        col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
+                        "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    height=500
+                )
 
 elif df_processed is not None:
     st.warning("Nessun dato trovato nel periodo selezionato.")
