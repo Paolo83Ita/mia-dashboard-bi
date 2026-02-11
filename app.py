@@ -6,203 +6,236 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
+import datetime
 
-# --- 1. SETUP & STILE POWER BI ---
-st.set_page_config(page_title="Executive BI Dashboard", page_icon="📈", layout="wide")
+# --- 1. CONFIGURAZIONE & STILE ---
+st.set_page_config(
+    page_title="Executive Dashboard",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Custom CSS per look "Power BI" (Sfondo grigio chiaro, card bianche, meno padding)
+# CSS per migliorare l'estetica (Rimuove padding eccessivi e stilizza i KPI)
 st.markdown("""
 <style>
-    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
-    div[data-testid="stMetric"] {
-        background-color: #ffffff;
-        border: 1px solid #e6e6e6;
-        padding: 15px;
-        border-radius: 5px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    div[data-testid="stExpander"] {
-        background-color: #f8f9fa;
-        border-radius: 5px;
-    }
+    .block-container {padding-top: 1rem; padding-bottom: 0rem;}
+    [data-testid="stMetricValue"] {font-size: 1.8rem !important;}
+    div[data-testid="stExpander"] div[role="button"] p {font-size: 1.1rem; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. MOTORE DI CONNESSIONE (BACKEND) ---
-@st.cache_data(ttl=600)
-def get_drive_service():
-    if "google_cloud" not in st.secrets:
+# --- 2. MOTORE DI CONNESSIONE (CACHE PER LISTA FILE) ---
+@st.cache_data(ttl=300)  # Aggiorna la lista file ogni 5 minuti
+def get_drive_files_list():
+    try:
+        if "google_cloud" not in st.secrets:
+            return None, "Secrets mancanti"
+            
+        creds = service_account.Credentials.from_service_account_info(st.secrets["google_cloud"])
+        service = build('drive', 'v3', credentials=creds)
+        folder_id = st.secrets["folder_id"]
+
+        query = f"'{folder_id}' in parents and (mimeType contains 'spreadsheet' or mimeType contains 'csv' or name contains '.xlsx') and trashed = false"
+        results = service.files().list(
+            q=query, 
+            fields="files(id, name, modifiedTime, size)", 
+            orderBy="modifiedTime desc",
+            pageSize=20
+        ).execute()
+        return results.get('files', []), service
+    except Exception as e:
+        return None, str(e)
+
+# --- 3. MOTORE DI SCARICAMENTO (CACHE PESANTE PER DATI) ---
+# Questa funzione viene eseguita SOLO se file_id o modified_time cambiano.
+# Altrimenti Streamlit usa la memoria RAM -> VELOCITÀ ISTANTANEA.
+@st.cache_data(show_spinner=False) 
+def load_dataset(file_id, modified_time, _service):
+    try:
+        request = _service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        
+        # Ottimizzazione lettura Excel
+        try:
+            # Prova a leggere come Excel
+            df = pd.read_excel(fh)
+        except:
+            fh.seek(0)
+            # Fallback su CSV
+            df = pd.read_csv(fh)
+            
+        # Converti colonne data automaticamente
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                try:
+                    df[col] = pd.to_datetime(df[col])
+                except (ValueError, TypeError):
+                    pass
+        return df
+    except Exception as e:
         return None
-    creds = service_account.Credentials.from_service_account_info(st.secrets["google_cloud"])
-    return build('drive', 'v3', credentials=creds)
 
-@st.cache_data(ttl=600)
-def get_file_list():
-    service = get_drive_service()
-    if not service: return []
-    folder_id = st.secrets["folder_id"]
-    query = f"'{folder_id}' in parents and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'text/csv' or mimeType = 'application/vnd.ms-excel') and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc").execute()
-    return results.get('files', [])
-
-def load_file_content(file_id, file_name):
-    service = get_drive_service()
-    request = service.files().get_media(fileId=file_id)
-    buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(buffer, request)
-    done = False
-    while not done: _, done = downloader.next_chunk()
-    buffer.seek(0)
-    if file_name.endswith('.csv'): return pd.read_csv(buffer)
-    return pd.read_excel(buffer)
-
-# --- 3. INTERFACCIA UTENTE (FRONTEND) ---
+# --- 4. INTERFACCIA UTENTE ---
 
 # HEADER
-c1, c2 = st.columns([3, 1])
-with c1:
-    st.title("📊 Corporate Analytics Hub")
-    st.caption("Google Drive Integrated Solution")
-with c2:
-    if st.button("🔄 Refresh Dati Cloud", type="primary"):
+col_title, col_btn = st.columns([6,1])
+with col_title:
+    st.title("📊 Executive BI Dashboard")
+with col_btn:
+    if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.rerun()
 
-# Recupero lista file
-all_files = get_file_list()
-if not all_files:
-    st.error("Nessun file trovato. Verifica la connessione o carica dati su Drive.")
-    st.stop()
-
-file_options = {f['name']: f['id'] for f in all_files}
-
-# TAB DI NAVIGAZIONE
-tab1, tab2 = st.tabs(["🔍 Analisi Singola (Deep Dive)", "⚖️ Confronto Multi-Sorgente"])
-
-# --- TAB 1: ANALISI DETTAGLIATA (POWER BI STYLE) ---
-with tab1:
-    # 1. TOP BAR: Selezione File e Filtri Globali
-    with st.container(border=True):
-        col_sel, col_filter = st.columns([1, 2])
-        with col_sel:
-            selected_filename = st.selectbox("📂 Seleziona Dataset", list(file_options.keys()), index=0)
-        
-        # Caricamento Dati
-        df = load_file_content(file_options[selected_filename], selected_filename)
-        
-        # Logica Filtri Dinamici
-        cols_obj = df.select_dtypes(include=['object']).columns.tolist()
-        cols_num = df.select_dtypes(include=['number']).columns.tolist()
-        
-        with col_filter:
-            if cols_obj:
-                filter_col = st.selectbox("Filtra per:", ["Nessun Filtro"] + cols_obj)
-                if filter_col != "Nessun Filtro":
-                    unique_vals = df[filter_col].unique()
-                    selected_vals = st.multiselect(f"Valori {filter_col}", unique_vals, default=unique_vals)
-                    df = df[df[filter_col].isin(selected_vals)]
-
-    # 2. KPI CARDS (Riga Indicatori)
-    if not df.empty:
-        st.markdown("### 📈 Key Performance Indicators")
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        
-        kpi1.metric("Record Totali", len(df))
-        kpi1.caption("Righe nel dataset")
-        
-        if cols_num:
-            main_val = cols_num[0]
-            totale = df[main_val].sum()
-            media = df[main_val].mean()
-            
-            kpi2.metric(f"Totale {main_val}", f"€ {totale:,.0f}")
-            kpi3.metric(f"Media {main_val}", f"€ {media:,.0f}")
-            
-            # Calcolo delta simulato (es. prima metà vs seconda metà del dataset)
-            half = len(df) // 2
-            delta = df.iloc[:half][main_val].sum() - df.iloc[half:][main_val].sum()
-            kpi4.metric("Variazione (Simulata)", f"{delta:,.0f}", delta_color="normal")
-
-        # 3. AREA VISUALIZZAZIONI
-        st.markdown("---")
-        
-        # Configurazione Visuali
-        c_left, c_right = st.columns([2, 1])
-        
-        with c_left:
-            with st.container(border=True):
-                st.subheader("Analisi Principale")
-                # Barra opzioni grafico integrata
-                g_type = st.radio("Tipo Visual:", ["Barre", "Linee", "Area"], horizontal=True, label_visibility="collapsed")
-                
-                if cols_num and cols_obj:
-                    x_axis = st.selectbox("Asse X", cols_obj, key="x_main")
-                    y_axis = st.selectbox("Asse Y", cols_num, key="y_main")
-                    
-                    if g_type == "Barre":
-                        fig = px.bar(df, x=x_axis, y=y_axis, color=x_axis, template="plotly_white")
-                    elif g_type == "Linee":
-                        fig = px.line(df, x=x_axis, y=y_axis, template="plotly_white", markers=True)
-                    else:
-                        fig = px.area(df, x=x_axis, y=y_axis, template="plotly_white")
-                        
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("Servono almeno una colonna testo e una numerica.")
-
-        with c_right:
-            with st.container(border=True):
-                st.subheader("Distribuzione")
-                if cols_obj and cols_num:
-                    cat_pie = st.selectbox("Categoria", cols_obj, key="pie_cat")
-                    fig_pie = px.pie(df, names=cat_pie, values=cols_num[0], hole=0.6, template="plotly_white")
-                    fig_pie.update_layout(showlegend=False)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-
-        # 4. DATA TABLE
-        with st.expander("Mostra Database Completo"):
-            st.dataframe(df, use_container_width=True)
-
-# --- TAB 2: CONFRONTO MULTI-SORGENTE ---
-with tab2:
-    st.subheader("⚔️ Confronto Diretto tra File")
+# SIDEBAR: SELEZIONE & FILTRI
+with st.sidebar:
+    st.header("🗂️ Sorgente Dati")
+    files, service = get_drive_files_list()
     
-    col_a, col_b = st.columns(2)
+    df_original = None
     
-    # SELEZIONE FILE A
-    with col_a:
-        st.markdown("#### Sorgente A")
-        file_a_name = st.selectbox("Seleziona File A", list(file_options.keys()), key="f_a")
-        df_a = load_file_content(file_options[file_a_name], file_a_name)
-        st.dataframe(df_a.head(5), use_container_width=True)
-        col_num_a = df_a.select_dtypes(include='number').columns.tolist()
-        if col_num_a:
-            val_a = st.selectbox("Metrica A", col_num_a, key="m_a")
-            tot_a = df_a[val_a].sum()
-            st.metric("Totale A", f"{tot_a:,.0f}")
+    if files:
+        file_map = {f['name']: f for f in files}
+        sel_file_name = st.selectbox("Seleziona File", list(file_map.keys()))
+        selected_file_obj = file_map[sel_file_name]
+        
+        # Mostra info file (dimensione e data)
+        mod_time_fmt = datetime.datetime.strptime(selected_file_obj['modifiedTime'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d/%m/%Y %H:%M")
+        st.caption(f"Ultima modifica: {mod_time_fmt}")
 
-    # SELEZIONE FILE B
-    with col_b:
-        st.markdown("#### Sorgente B")
-        file_b_name = st.selectbox("Seleziona File B", list(file_options.keys()), key="f_b", index=1 if len(file_options)>1 else 0)
-        df_b = load_file_content(file_options[file_b_name], file_b_name)
-        st.dataframe(df_b.head(5), use_container_width=True)
-        col_num_b = df_b.select_dtypes(include='number').columns.tolist()
-        if col_num_b:
-            val_b = st.selectbox("Metrica B", col_num_b, key="m_b")
-            tot_b = df_b[val_b].sum()
-            st.metric("Totale B", f"{tot_b:,.0f}")
+        # CARICAMENTO DATI (Con Spinner)
+        with st.spinner('Scaricamento e elaborazione dati in corso...'):
+            df_original = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
+    else:
+        st.error("Nessun file trovato o errore connessione.")
 
-    # CONFRONTO GRAFICO
+    # --- FILTRI INCROCIATI (IL CUORE DELLA BI) ---
     st.divider()
-    if col_num_a and col_num_b:
-        st.markdown("#### Delta Visivo")
-        delta_fig = go.Figure()
-        delta_fig.add_trace(go.Bar(name=file_a_name, x=[val_a], y=[tot_a], marker_color='#2E86C1'))
-        delta_fig.add_trace(go.Bar(name=file_b_name, x=[val_b], y=[tot_b], marker_color='#E74C3C'))
-        delta_fig.update_layout(barmode='group', template='plotly_white', height=300)
-        st.plotly_chart(delta_fig, use_container_width=True)
+    st.header("🔍 Filtri Avanzati")
+    
+    df_filtered = df_original.copy() if df_original is not None else None
+    
+    if df_filtered is not None:
+        # Identifica colonne filtro (Testo e Date)
+        filter_cols = df_filtered.select_dtypes(include=['object', 'category']).columns.tolist()
+        date_cols = df_filtered.select_dtypes(include=['datetime']).columns.tolist()
+        
+        # Filtro Data (se presente)
+        if date_cols:
+            date_col = date_cols[0] # Prende la prima colonna data trovata
+            min_date = df_filtered[date_col].min()
+            max_date = df_filtered[date_col].max()
+            if not pd.isnull(min_date) and not pd.isnull(max_date):
+                start_date, end_date = st.date_input(
+                    f"Periodo ({date_col})",
+                    [min_date, max_date],
+                    min_value=min_date,
+                    max_value=max_date
+                )
+                df_filtered = df_filtered[
+                    (df_filtered[date_col].dt.date >= start_date) & 
+                    (df_filtered[date_col].dt.date <= end_date)
+                ]
 
-# FOOTER
-st.markdown("---")
-st.caption("Cloud BI System | Powered by Python & Streamlit")
+        # Filtri Categorici Dinamici
+        # Limitiamo ai primi 5 filtri categorici per non intasare, o scegliamo specifici
+        for col in filter_cols[:5]: 
+            options = sorted(df_filtered[col].astype(str).unique().tolist())
+            # Multiselect intelligente
+            selected_vals = st.multiselect(f"{col}", options)
+            if selected_vals:
+                df_filtered = df_filtered[df_filtered[col].astype(str).isin(selected_vals)]
+                
+        st.caption(f"Record visualizzati: {len(df_filtered)} / {len(df_original)}")
+
+# --- 5. DASHBOARD VISUALIZATION ---
+
+if df_filtered is not None and not df_filtered.empty:
+    
+    # Identificazione Colonne
+    num_cols = df_filtered.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = df_filtered.select_dtypes(include=['object', 'category']).columns.tolist()
+    
+    if not num_cols:
+        st.warning("Il file non contiene colonne numeriche per generare KPI.")
+    else:
+        # --- RIGA KPI (CARDS) ---
+        kpi_cols = st.columns(4)
+        
+        # KPI 1: Totale Principale (es. Fatturato)
+        val_main = df_filtered[num_cols[0]].sum()
+        kpi_cols[0].metric(label=f"Totale {num_cols[0]}", value=f"{val_main:,.0f}")
+        
+        # KPI 2: Media (es. Valore Medio Ordine)
+        val_avg = df_filtered[num_cols[0]].mean()
+        kpi_cols[1].metric(label=f"Media {num_cols[0]}", value=f"{val_avg:,.0f}")
+        
+        # KPI 3: Conteggio (es. Numero Ordini)
+        kpi_cols[2].metric(label="Volume Transazioni", value=len(df_filtered))
+        
+        # KPI 4: Seconda metrica numerica (se esiste)
+        if len(num_cols) > 1:
+            val_sec = df_filtered[num_cols[1]].sum()
+            kpi_cols[3].metric(label=f"Totale {num_cols[1]}", value=f"{val_sec:,.0f}")
+        else:
+             kpi_cols[3].metric(label="Stato Dati", value="OK")
+
+        st.markdown("---")
+
+        # --- ZONA GRAFICI (GRID LAYOUT) ---
+        
+        # Selettori grafici rapidi
+        c_sel1, c_sel2 = st.columns(2)
+        with c_sel1:
+            chart_x = st.selectbox("Asse Raggruppamento (X)", cat_cols if cat_cols else num_cols, index=0)
+        with c_sel2:
+            chart_y = st.selectbox("Metrica Valore (Y)", num_cols, index=0)
+
+        row1_col1, row1_col2 = st.columns([2, 1])
+
+        with row1_col1:
+            st.subheader("Analisi Trend / Categoria")
+            # Logica: Se l'asse X è una data -> Line Chart, altrimenti Bar Chart
+            if chart_x in date_cols:
+                # Aggregazione temporale
+                df_trend = df_filtered.groupby(chart_x)[chart_y].sum().reset_index()
+                fig_main = px.line(df_trend, x=chart_x, y=chart_y, markers=True, 
+                                  template="plotly_white", line_shape="spline")
+                fig_main.update_traces(line_color="#0068C9", line_width=3)
+                fig_main.update_layout(xaxis_title="", yaxis_title="", height=400)
+            else:
+                # Aggregazione categoriale (Top 15)
+                df_bar = df_filtered.groupby(chart_x)[chart_y].sum().reset_index().sort_values(chart_y, ascending=False).head(15)
+                fig_main = px.bar(df_bar, x=chart_x, y=chart_y, 
+                                 template="plotly_white", text_auto='.2s')
+                fig_main.update_traces(marker_color="#0068C9")
+                fig_main.update_layout(xaxis_title="", yaxis_title="", height=400)
+            
+            st.plotly_chart(fig_main, use_container_width=True)
+
+        with row1_col2:
+            st.subheader("Composizione")
+            if cat_cols:
+                # Pie Chart sul primo campo categorico o quello selezionato
+                target_cat = chart_x if chart_x in cat_cols else cat_cols[0]
+                df_pie = df_filtered.groupby(target_cat)[chart_y].sum().reset_index().sort_values(chart_y, ascending=False).head(10)
+                fig_pie = px.pie(df_pie, names=target_cat, values=chart_y, hole=0.5, template="plotly_white")
+                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie.update_layout(showlegend=False, height=400, margin=dict(t=0, b=0, l=0, r=0))
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("Necessaria colonna Categoria per grafico a torta")
+
+        # --- DATA TABLE DETTAGLIATA ---
+        with st.expander("📂 Visualizza Dati Dettagliati (Export Excel)", expanded=False):
+            st.dataframe(df_filtered, use_container_width=True, height=300)
+
+elif df_original is not None:
+    st.warning("Il filtro applicato non ha prodotto risultati. Prova a resettare i filtri nella sidebar.")
+else:
+    st.info("👈 Seleziona un file dalla barra laterale per iniziare.")
