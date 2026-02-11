@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v11",
+    page_title="EITA Analytics Pro v13",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,18 +80,17 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V11 - Cartoni Support) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V13) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
-    # Target specifici che sappiamo essere numerici dalla legenda
     target_numeric_cols = [
         'Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 
         'Qta_Cartoni_Ordinato', 'Prezzo_Netto'
     ]
     
     for col in df.columns:
-        if col in ['Numero_Pallet', 'Sovrapponibile']: continue # Ignore list
+        if col in ['Numero_Pallet', 'Sovrapponibile']: continue 
 
         sample = df[col].dropna().astype(str).head(100).tolist()
         if not sample: continue
@@ -104,7 +103,7 @@ def smart_analyze_and_clean(df_in):
             except:
                 pass
         
-        # B. NUMERI (Incluse nuove colonne Cartoni)
+        # B. NUMERI
         is_target_numeric = any(t in col for t in target_numeric_cols)
         looks_numeric = any(c.isdigit() for s in sample for c in s)
 
@@ -122,7 +121,7 @@ def smart_analyze_and_clean(df_in):
                 pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE (V11)
+# LOGICA DI AUTO-ASSEGNAZIONE (V13)
 def guess_column_role(df):
     cols = df.columns
     guesses = {
@@ -130,26 +129,21 @@ def guess_column_role(df):
         'euro': None, 'kg': None, 'cartons': None, 'date': None
     }
     
-    # --- DIZIONARIO GOLDEN ---
     golden_rules = {
         'euro': ['Importo_Netto_TotRiga'], 
         'kg': ['Peso_Netto_TotRiga'],
-        'cartons': ['Qta_Cartoni_Ordinato'], # Nuova regola specifica
+        'cartons': ['Qta_Cartoni_Ordinato'],
         'date': ['Data_Ordine', 'Data_Fattura', 'Data_Consegna'], 
         'entity': ['Entity', 'Società'],
         'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Ragione Sociale'],
         'product': ['Descr_Articolo', 'Descrizione articolo']
     }
 
-    # 1. CERCA COLONNE ESATTE
     for role, targets in golden_rules.items():
         for t in targets:
             if t in cols:
                 guesses[role] = t
                 break
-    
-    # 2. EURISTICA (Fallback)
-    kw_cartons = ['carton', 'colli', 'ct', 'box']
     
     for col in cols:
         col_lower = col.lower()
@@ -160,13 +154,12 @@ def guess_column_role(df):
             continue
 
         if pd.api.types.is_numeric_dtype(df[col]):
-            # Logica base per numeri
             pass 
 
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v11")
+st.sidebar.title("💎 Control Panel v13")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -212,9 +205,9 @@ if df_processed is not None:
         col_cartons = st.selectbox("Cartoni (Qty)", all_cols, index=set_idx(guesses['cartons'], all_cols), help="Qta_Cartoni_Ordinato")
         col_data = st.selectbox("Data", all_cols, index=set_idx(guesses['date'], all_cols), help="Data_Ordine")
 
-    # C. FILTRI
+    # C. FILTRI STANDARD
     st.sidebar.markdown("---")
-    st.sidebar.subheader("3. Filtri")
+    st.sidebar.subheader("3. Filtri Base")
     
     df_global = df_processed.copy()
     
@@ -237,12 +230,36 @@ if df_processed is not None:
             (df_global[col_data].dt.date <= d_end)
         ]
 
-    # CLIENTE
+    # CLIENTE (Base)
     if col_customer:
         custs = sorted(df_global[col_customer].astype(str).unique())
-        sel_custs = st.sidebar.multiselect("Clienti Specifici", custs)
+        sel_custs = st.sidebar.multiselect("Clienti (Rapido)", custs)
         if sel_custs:
             df_global = df_global[df_global[col_customer].astype(str).isin(sel_custs)]
+
+    # D. FILTRI AVANZATI (NUOVO)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("4. Filtri Avanzati")
+    
+    # Colonne escluse dalla selezione filtri (per evitare ridondanza o crash su colonne numeriche pure)
+    cols_to_exclude = [col_euro, col_kg, col_cartons, col_data]
+    # Lista colonne filtrabili (tutte meno quelle numeriche/data già gestite)
+    possible_filters = [c for c in all_cols if c not in cols_to_exclude]
+    
+    # Multiselect per scegliere QUALI filtri aggiungere
+    filters_selected = st.sidebar.multiselect("Aggiungi criterio di filtro:", possible_filters)
+    
+    # Generazione dinamica dei filtri scelti
+    for f_col in filters_selected:
+        # Recupera valori unici dal dataset ATTUALE (già filtrato dai passaggi precedenti)
+        # Questo crea l'effetto "Cascata"
+        unique_vals = sorted(df_global[f_col].astype(str).unique())
+        
+        # Multiselect per i valori
+        sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals)
+        
+        if sel_vals:
+            df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
 
 
 # --- 4. DASHBOARD BODY ---
@@ -289,8 +306,12 @@ if df_processed is not None and not df_global.empty:
             format_func=lambda x: f"{x} (€ {top_cust_list[x]:,.0f})"
         )
         
-        # --- NUOVO GRAFICO: TOP PRODOTTI ---
+        # --- GRAFICO DINAMICO ---
         if sel_target_cust:
+            st.write("") 
+            # Selettore Tipo Grafico
+            chart_type = st.radio("Tipo Visualizzazione:", ["Barre", "Torta", "Donut"], horizontal=True, label_visibility="collapsed")
+            
             df_c = df_global[df_global[col_customer] == sel_target_cust]
             
             # Aggregazione per Prodotto
@@ -300,27 +321,46 @@ if df_processed is not None and not df_global.empty:
                 col_cartons: 'sum'
             }).reset_index().sort_values(col_euro, ascending=False).head(10) # Top 10
             
-            fig = px.bar(
-                prod_chart_data, 
-                x=col_euro, 
-                y=col_prod, 
-                orientation='h',
-                title="Top 10 Prodotti (per Valore €)",
-                text_auto='.2s',
-                hover_data={
-                    col_euro: ':,.2f',
-                    col_kg: ':,.0f',
-                    col_cartons: ':,.0f'
-                }
-            )
-            fig.update_layout(
-                height=400, 
-                yaxis=dict(autorange="reversed"), # Primo in alto
-                margin=dict(l=0,r=0,t=30,b=0),
-                xaxis_title="Fatturato (€)",
-                yaxis_title=None
-            )
-            fig.update_traces(marker_color='#004e92')
+            if chart_type == "Barre":
+                fig = px.bar(
+                    prod_chart_data, 
+                    x=col_euro, 
+                    y=col_prod, 
+                    orientation='h',
+                    title="Top 10 Prodotti (per Valore €)",
+                    text_auto='.2s',
+                    hover_data={
+                        col_euro: ':,.2f',
+                        col_kg: ':,.0f',
+                        col_cartons: ':,.0f'
+                    }
+                )
+                fig.update_layout(
+                    height=400, 
+                    yaxis=dict(autorange="reversed"),
+                    margin=dict(l=0,r=0,t=30,b=0),
+                    xaxis_title="Fatturato (€)",
+                    yaxis_title=None
+                )
+                fig.update_traces(marker_color='#004e92')
+            
+            elif chart_type in ["Torta", "Donut"]:
+                hole_size = 0.4 if chart_type == "Donut" else 0
+                fig = px.pie(
+                    prod_chart_data,
+                    values=col_euro,
+                    names=col_prod,
+                    title="Top 10 Prodotti (Quota Fatturato)",
+                    hole=hole_size,
+                    hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
+                )
+                fig.update_layout(
+                    height=400,
+                    margin=dict(l=0,r=0,t=30,b=0),
+                    showlegend=False
+                )
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+
             st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
