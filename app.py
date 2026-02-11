@@ -8,42 +8,30 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 import datetime
 
-# --- 1. CONFIGURAZIONE & STILE PREMIUM ---
+# --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="Director Dashboard",
+    page_title="Director Dashboard Pro",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS Avanzato per effetto "Glassmorphism" e KPI Card
+# CSS per pulizia visiva
 st.markdown("""
 <style>
-    .block-container {padding-top: 1.5rem; padding-bottom: 1rem;}
-    
-    /* Stile KPI Card */
+    .block-container {padding-top: 1rem; padding-bottom: 2rem;}
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
         padding: 15px;
-        border-radius: 10px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.05);
-        transition: transform 0.2s;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    div[data-testid="stMetric"]:hover {
-        transform: translateY(-2px);
-        box-shadow: 2px 5px 15px rgba(0,0,0,0.1);
-    }
-    [data-testid="stMetricLabel"] {color: #6c757d; font-size: 0.9rem; font-weight: 600;}
-    [data-testid="stMetricValue"] {color: #212529; font-size: 1.6rem; font-weight: 800;}
-    [data-testid="stMetricDelta"] {font-size: 0.9rem;}
-    
-    /* Titoli */
-    h1, h2, h3 {font-family: 'Segoe UI', sans-serif;}
+    h1, h2, h3 {font-family: 'Helvetica Neue', sans-serif;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CONNESSIONE DRIVE (CACHE INTELLIGENTE) ---
+# --- 2. MOTORE DATI (CACHE) ---
 @st.cache_data(ttl=300)
 def get_drive_files_list():
     try:
@@ -52,7 +40,7 @@ def get_drive_files_list():
         creds = service_account.Credentials.from_service_account_info(st.secrets["google_cloud"])
         service = build('drive', 'v3', credentials=creds)
         folder_id = st.secrets["folder_id"]
-        # Cerca Excel e CSV
+        
         query = f"'{folder_id}' in parents and (mimeType contains 'spreadsheet' or mimeType contains 'csv' or name contains '.xlsx') and trashed = false"
         results = service.files().list(
             q=query, fields="files(id, name, modifiedTime, size)", 
@@ -78,208 +66,190 @@ def load_dataset(file_id, modified_time, _service):
             fh.seek(0)
             df = pd.read_csv(fh)
         
-        # Pulizia e conversione date automatica
+        # Conversione date robusta
         for col in df.columns:
             if df[col].dtype == 'object':
                 try:
-                    df[col] = pd.to_datetime(df[col], dayfirst=True) # Tenta formato europeo
+                    df[col] = pd.to_datetime(df[col], dayfirst=True)
                 except:
                     pass
         return df
     except Exception as e:
         return None
 
-# --- 3. INTERFACCIA LATERALE (SIDEBAR) ---
-st.title("💎 Director BI Dashboard")
+# --- 3. SIDEBAR: SETUP & FILTRI ---
+st.sidebar.title("💎 BI Control Panel")
 
-with st.sidebar:
-    st.header("🗂️ Multi-Sorgente")
-    files, service = get_drive_files_list()
-    
-    df_original = None
+# A. SELEZIONE FILE
+files, service = get_drive_files_list()
+df_original = None
+
+with st.sidebar.expander("📂 1. Sorgente Dati", expanded=True):
     if files:
         file_map = {f['name']: f for f in files}
-        sel_file_name = st.selectbox("Seleziona File da Analizzare", list(file_map.keys()))
+        sel_file_name = st.selectbox("Seleziona File", list(file_map.keys()), label_visibility="collapsed")
         selected_file_obj = file_map[sel_file_name]
         
-        with st.spinner('Accesso al Cloud sicuro in corso...'):
+        with st.spinner('Caricamento dati...'):
             df_original = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
-            
-        st.success(f"Caricato: {len(df_original):,} righe")
+        st.caption(f"Righe: {len(df_original):,}")
     else:
         st.error("Nessun file trovato.")
 
-    st.markdown("---")
-    
-    # --- CONFIGURAZIONE INTELLIGENTE KPI ---
-    st.header("⚙️ Configurazione KPI")
-    st.caption("Associa le colonne del tuo Excel ai KPI")
-    
-    if df_original is not None:
-        all_cols = df_original.columns.tolist()
-        num_cols = df_original.select_dtypes(include=['number']).columns.tolist()
-        date_cols = df_original.select_dtypes(include=['datetime']).columns.tolist()
-        cat_cols = df_original.select_dtypes(include=['object', 'category']).columns.tolist()
+# B. MAPPATURA COLONNE (SETUP)
+col_euro, col_kg, col_data, col_cat = None, None, None, None
 
-        # Helper per trovare colonne di default
-        def find_col(keywords, columns):
-            for col in columns:
-                if any(k.lower() in col.lower() for k in keywords):
-                    return col
-            return columns[0] if columns else None
-
-        # MAPPING
-        with st.expander("Mappatura Colonne (Importante!)", expanded=True):
-            col_euro = st.selectbox("Colonna Valore (€)", num_cols, index=num_cols.index(find_col(['fatturato', 'importo', 'eur', 'totale', 'amount'], num_cols)) if num_cols else 0)
-            col_kg = st.selectbox("Colonna Peso (Kg/Qty)", num_cols, index=num_cols.index(find_col(['kg', 'peso', 'qta', 'qty', 'quantity'], num_cols)) if num_cols else 0)
-            col_data = st.selectbox("Colonna Data Riferimento", date_cols, index=date_cols.index(find_col(['data', 'date', 'giorno'], date_cols)) if date_cols else 0)
-            col_cliente = st.selectbox("Colonna Cliente/Entity", cat_cols, index=cat_cols.index(find_col(['cliente', 'customer', 'ragione', 'entity'], cat_cols)) if cat_cols else 0)
-
-    # --- FILTRI DINAMICI AVANZATI ---
-    st.markdown("---")
-    st.header("🔍 Filtri Avanzati")
+if df_original is not None:
+    # Helper functions per auto-selezione
+    num_cols = df_original.select_dtypes(include=['number']).columns.tolist()
+    date_cols = df_original.select_dtypes(include=['datetime']).columns.tolist()
+    cat_cols = df_original.select_dtypes(include=['object', 'category']).columns.tolist()
     
-    df_filtered = df_original.copy() if df_original is not None else None
+    def get_idx(keywords, cols):
+        for i, c in enumerate(cols):
+            if any(k in c.lower() for k in keywords): return i
+        return 0
+
+    with st.sidebar.expander("⚙️ 2. Configurazione Colonne", expanded=False):
+        st.info("Associa le colonne per far funzionare i KPI")
+        col_euro = st.selectbox("Valore (€)", num_cols, index=get_idx(['eur', 'fatturato', 'total', 'amount'], num_cols))
+        col_kg = st.selectbox("Quantità (Kg/Pz)", num_cols, index=get_idx(['kg', 'qty', 'qta', 'quantity', 'peso'], num_cols))
+        col_data = st.selectbox("Data Ordine", date_cols, index=get_idx(['data', 'date', 'time'], date_cols))
+        col_cat = st.selectbox("Entità/Cliente", cat_cols, index=get_idx(['client', 'custom', 'ragione', 'entity'], cat_cols))
+
+    # C. MOTORE DI FILTRAGGIO (ANALISI)
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔍 3. Filtri Analisi")
     
-    if df_filtered is not None and col_data:
-        # 1. Filtro Data Obbligatorio (per YoY)
+    df_filtered = df_original.copy()
+    active_filters = {} # Dizionario per salvare i filtri attivi
+    
+    # 1. Filtro Temporale (Fondamentale)
+    if col_data:
         min_d, max_d = df_filtered[col_data].min(), df_filtered[col_data].max()
         if not pd.isnull(min_d):
-            # Default: Ultimo mese disponibile
-            default_start = max_d - pd.DateOffset(days=30)
-            d_start, d_end = st.date_input("Periodo di Analisi", [default_start, max_d], min_value=min_d, max_value=max_d)
+            # Default: MTD (Month to Date) o ultimo mese
+            def_start = max_d.replace(day=1) 
+            d_start, d_end = st.sidebar.date_input("Periodo", [def_start, max_d], min_value=min_d, max_value=max_d)
             
-            # Filtro Data Applicato
-            mask_date = (df_filtered[col_data].dt.date >= d_start) & (df_filtered[col_data].dt.date <= d_end)
-            df_period = df_filtered[mask_date]
+            # Applica filtro data
+            df_filtered = df_filtered[(df_filtered[col_data].dt.date >= d_start) & (df_filtered[col_data].dt.date <= d_end)]
         else:
             d_start, d_end = None, None
-            df_period = df_filtered
 
-        # 2. Filtri Incrociati Aggiuntivi
-        st.subheader("Filtri Attributi")
-        filters_to_add = st.multiselect("Aggiungi filtri su:", cat_cols)
+    # 2. Filtri Categoriali "A Cascata"
+    # L'utente sceglie su QUALI colonne vuole filtrare
+    filters_selected = st.sidebar.multiselect("Aggiungi Filtro su:", cat_cols, default=[col_cat] if col_cat else None)
+    
+    for f_col in filters_selected:
+        # Le opzioni disponibili dipendono dai filtri precedenti (Effetto Imbuto)
+        options = sorted(df_filtered[f_col].astype(str).unique())
+        selection = st.sidebar.multiselect(f"{f_col}", options)
         
-        for f_col in filters_to_add:
-            options = sorted(df_period[f_col].astype(str).unique())
-            sel = st.multiselect(f"Filtra {f_col}", options)
-            if sel:
-                df_period = df_period[df_period[f_col].astype(str).isin(sel)]
-        
-        df_final = df_period # Dataset finale filtrato
+        if selection:
+            df_filtered = df_filtered[df_filtered[f_col].astype(str).isin(selection)]
+            active_filters[f_col] = selection # Salviamo per usarlo nel YoY
 
 # --- 4. DASHBOARD BODY ---
+st.title("📊 Executive Dashboard")
 
-if df_original is not None and not df_final.empty:
+if df_original is not None and not df_filtered.empty:
+
+    # --- CALCOLO KPI & YOY (CORRETTO) ---
+    curr_euro = df_filtered[col_euro].sum()
+    curr_kg = df_filtered[col_kg].sum()
     
-    # --- CALCOLO KPI AVANZATI (YoY) ---
-    
-    # Totali Attuali
-    curr_euro = df_final[col_euro].sum()
-    curr_kg = df_final[col_kg].sum()
-    
-    # Totale Entity (per incidenza) - Basato sul dataset intero filtrato solo per Entity se selezionata
-    # Qui semplifichiamo: Totale del periodo SENZA i filtri di categoria (ma con filtro data)
-    # Oppure: Totale Generale Dataset (Incidenza sul Fatturato Globale Azienda)
-    # Interpretazione richiesta: "incidenza fatturato cliente sul totale"
-    total_turnover_period = df_filtered[mask_date][col_euro].sum() if 'mask_date' in locals() else df_filtered[col_euro].sum()
-    incidence_perc = (curr_euro / total_turnover_period * 100) if total_turnover_period > 0 else 0
-    
-    # Logica YoY (Anno Precedente)
+    # Calcolo Incidenza
+    # Incidenza = (Fatturato Filtrato / Fatturato Totale Periodo SENZA filtri categoriali)
+    mask_date_only = (df_original[col_data].dt.date >= d_start) & (df_original[col_data].dt.date <= d_end)
+    total_period_turnover = df_original[mask_date_only][col_euro].sum()
+    incidence = (curr_euro / total_period_turnover * 100) if total_period_turnover > 0 else 0
+
+    # Calcolo Anno Precedente (Logic Fix)
+    prev_euro = 0
     has_yoy = False
-    delta_euro = 0
-    delta_kg = 0
     
     if d_start and d_end:
-        prev_start = d_start - pd.DateOffset(years=1)
-        prev_end = d_end - pd.DateOffset(years=1)
-        
-        # Filtriamo il dataset originale per l'anno scorso (stessi filtri categoriali se possibile)
-        # Nota: per semplicità applichiamo solo filtro data anno scorso + filtri attivi
-        mask_prev_date = (df_original[col_data].dt.date >= prev_start.date()) & (df_original[col_data].dt.date <= prev_end.date())
-        df_prev = df_original[mask_prev_date]
-        
-        # Riapplichiamo i filtri categoriali attivi anche sull'anno scorso per confronto omogeneo
-        for f_col in filters_to_add:
-            # Recuperiamo la selezione fatta sopra (non semplice in Streamlit senza session state complesso, 
-            # ma qui assumiamo che df_final sia già filtrato. Replichiamo la logica base se necessario)
-            # Per questa versione, il YoY è "Macro" sul periodo selezionato.
-            pass
-
-        prev_euro = df_prev[col_euro].sum()
-        
-        if prev_euro > 0:
-            delta_euro = ((curr_euro - prev_euro) / prev_euro) * 100
+        try:
+            # Shift data di 1 anno indietro
+            p_start = d_start.replace(year=d_start.year - 1)
+            p_end = d_end.replace(year=d_end.year - 1)
+            
+            # 1. Filtro Data LY
+            mask_prev = (df_original[col_data].dt.date >= p_start) & (df_original[col_data].dt.date <= p_end)
+            df_prev = df_original[mask_prev]
+            
+            # 2. RIAPPLICA GLI STESSI FILTRI CATEGORIALI (Fix Incongruenza)
+            for col, values in active_filters.items():
+                if col in df_prev.columns:
+                    df_prev = df_prev[df_prev[col].astype(str).isin(values)]
+            
+            prev_euro = df_prev[col_euro].sum()
             has_yoy = True
+        except ValueError:
+            pass # Gestione anni bisestili (es. 29 feb)
 
-    # --- KPI DISPLAY ---
+    delta_val = ((curr_euro - prev_euro) / prev_euro * 100) if prev_euro > 0 else 0
+
+    # --- DISPLAY KPI ---
     k1, k2, k3, k4 = st.columns(4)
-    
-    k1.metric("Totale Fatturato", f"€ {curr_euro:,.0f}", f"{delta_euro:.1f}% vs LY" if has_yoy else None)
-    k2.metric("Incidenza su Totale", f"{incidence_perc:.1f}%", help=f"Su un totale periodo di € {total_turnover_period:,.0f}")
-    k3.metric("Volume Totale", f"{curr_kg:,.0f} Kg")
-    k4.metric("Record Analizzati", len(df_final), "Righe")
+    k1.metric(f"Totale {col_euro}", f"€ {curr_euro:,.0f}", f"{delta_val:+.1f}% vs LY" if has_yoy else None)
+    k2.metric("Incidenza (su Tot. Azienda)", f"{incidence:.1f}%", f"di € {total_period_turnover:,.0f}")
+    k3.metric(f"Totale {col_kg}", f"{curr_kg:,.0f}", delta_color="off") # Unità dinamica nel nome
+    k4.metric("N. Ordini/Righe", f"{len(df_filtered):,}")
 
-    st.markdown("---")
+    st.divider()
 
-    # --- GRAFICI POTENZIATI ---
-    
-    col_g1, col_g2 = st.columns([2, 1])
+    # --- GRAFICI AVANZATI ---
+    g1, g2 = st.columns([2, 1])
 
-    with col_g1:
-        st.subheader("📊 Analisi Trend e Dettaglio")
-        # Selettori on-chart
-        x_axis = st.selectbox("Raggruppa per:", cat_cols, index=0)
+    with g1:
+        st.subheader("📈 Analisi Trend")
+        
+        # Controlli Grafico
+        c1, c2 = st.columns(2)
+        x_axis = c1.selectbox("Raggruppa per:", cat_cols, index=0)
+        y_axis = c2.selectbox("Metrica:", [col_euro, col_kg])
         
         # Aggregazione
-        df_chart = df_final.groupby(x_axis)[[col_euro, col_kg]].sum().reset_index()
-        df_chart = df_chart.sort_values(col_euro, ascending=False).head(20)
+        df_chart = df_filtered.groupby(x_axis)[y_axis].sum().reset_index().sort_values(y_axis, ascending=False).head(15)
         
-        # Grafico Bar Chart con Gradiente e Hover Ricco
-        fig_bar = px.bar(
-            df_chart, x=x_axis, y=col_euro,
-            color=col_euro,
-            color_continuous_scale="Bluered", # Scala colori elegante
+        # Unità di misura dinamica per asse e tooltip
+        unit_prefix = "€" if y_axis == col_euro else ""
+        
+        fig = px.bar(
+            df_chart, x=x_axis, y=y_axis,
             text_auto='.2s',
-            hover_data={col_euro:':,.2f', col_kg:':,.2f', x_axis: True},
-            title=f"Top 20 {x_axis} per Fatturato"
+            color=y_axis, color_continuous_scale="Blues"
         )
-        fig_bar.update_traces(marker_line_width=0, opacity=0.9) # Effetto solido
-        fig_bar.update_layout(
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis_title="", yaxis_title="Fatturato (€)",
-            hovermode="x unified",
-            height=450
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with col_g2:
-        st.subheader("🍩 Composizione")
-        # Grafico Donut 3D-like
-        fig_pie = px.pie(
-            df_chart.head(10), values=col_euro, names=x_axis,
-            hole=0.6,
-            color_discrete_sequence=px.colors.sequential.RdBu
-        )
-        fig_pie.update_traces(
-            textposition='inside', 
-            textinfo='percent',
-            hoverinfo='label+percent+value',
-            pull=[0.1, 0, 0, 0] # Estrae la fetta più grande (Effetto 3D)
-        )
-        fig_pie.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), height=400)
         
-        # Centro del Donut con Totale
-        fig_pie.add_annotation(text=f"TOP 10<br>{x_axis}", showarrow=False, font_size=14)
+        # Layout Pulito e Assi Dinamici
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title=y_axis, # Nome della colonna come titolo asse
+            plot_bgcolor="white",
+            height=400,
+            hovermode="x unified"
+        )
+        fig.update_traces(
+            hovertemplate=f"<b>%{{x}}</b><br>{y_axis}: {unit_prefix} %{{y:,.0f}}<extra></extra>"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with g2:
+        st.subheader("🍩 Composizione")
+        fig_pie = px.donut(df_chart.head(8), values=y_axis, names=x_axis, hole=0.6)
+        fig_pie.update_layout(showlegend=False, margin=dict(t=0,b=0,l=0,r=0), height=350)
+        
+        # Centro Donut
+        total_chart = df_chart[y_axis].sum()
+        fig_pie.add_annotation(text=f"TOP 8<br>{unit_prefix} {total_chart:,.0f}", showarrow=False, font_size=16, font_weight="bold")
         
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # --- DETTAGLIO ---
-    with st.expander("📑 Dati Dettagliati (Tabella Interattiva)"):
-        st.dataframe(
-            df_final.style.format({col_euro: "€ {:,.2f}", col_kg: "{:,.0f}"}),
-            use_container_width=True
-        )
+    # --- TABELLA DETTAGLIO ---
+    with st.expander("📑 Dati Analitici (Scarica Excel)"):
+        st.dataframe(df_filtered, use_container_width=True)
 
 elif df_original is not None:
-    st.warning("Nessun dato trovato con i filtri correnti. Prova ad allargare il periodo.")
+    st.warning("Nessun dato trovato per il periodo selezionato.")
