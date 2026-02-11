@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v15",
+    page_title="EITA Analytics Pro v16",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,7 +80,7 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V14) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V16) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
@@ -121,7 +121,7 @@ def smart_analyze_and_clean(df_in):
                 pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE (V14)
+# LOGICA DI AUTO-ASSEGNAZIONE (V16)
 def guess_column_role(df):
     cols = df.columns
     guesses = {
@@ -129,12 +129,14 @@ def guess_column_role(df):
         'euro': None, 'kg': None, 'cartons': None, 'date': None
     }
     
+    # --- GOLDEN RULES ---
     golden_rules = {
         'euro': ['Importo_Netto_TotRiga'], 
         'kg': ['Peso_Netto_TotRiga'],
         'cartons': ['Qta_Cartoni_Ordinato'],
         'date': ['Data_Ordine', 'Data_Fattura', 'Data_Consegna'], 
         'entity': ['Entity', 'Società'],
+        # Priorità al Cliente Fatturazione come richiesto
         'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Ragione Sociale'],
         'product': ['Descr_Articolo', 'Descrizione articolo']
     }
@@ -145,6 +147,7 @@ def guess_column_role(df):
                 guesses[role] = t
                 break
     
+    # Fallback
     for col in cols:
         col_lower = col.lower()
         if any(guesses.values()) and col in guesses.values(): continue
@@ -159,7 +162,7 @@ def guess_column_role(df):
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v15")
+st.sidebar.title("💎 Control Panel v16")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -198,7 +201,8 @@ if df_processed is not None:
 
     with st.sidebar.expander("Verifica Colonne", expanded=True):
         col_entity = st.selectbox("Entità", all_cols, index=set_idx(guesses['entity'], all_cols))
-        col_customer = st.selectbox("Cliente", all_cols, index=set_idx(guesses['customer'], all_cols))
+        # Label esplicita per il cliente
+        col_customer = st.selectbox("Cliente (Fatturazione)", all_cols, index=set_idx(guesses['customer'], all_cols), help="Cerca: Descr_Cliente_Fat")
         col_prod = st.selectbox("Prodotto", all_cols, index=set_idx(guesses['product'], all_cols))
         col_euro = st.selectbox("Valore (€)", all_cols, index=set_idx(guesses['euro'], all_cols), help="Importo_Netto_TotRiga")
         col_kg = st.selectbox("Peso (Kg)", all_cols, index=set_idx(guesses['kg'], all_cols), help="Peso_Netto_TotRiga")
@@ -230,7 +234,7 @@ if df_processed is not None:
             (df_global[col_data].dt.date <= d_end)
         ]
 
-    # CLIENTE (Base)
+    # CLIENTE (Filtro Base)
     if col_customer:
         custs = sorted(df_global[col_customer].astype(str).unique())
         sel_custs = st.sidebar.multiselect("Clienti (Rapido)", custs)
@@ -288,15 +292,22 @@ if df_processed is not None and not df_global.empty:
     
     # PREPARAZIONE DATI PER SELEZIONE CLIENTE (o TUTTI)
     if col_customer:
+        # 1. Raggruppa per cliente e somma fatturato
         top_cust_list = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
+        
+        # 2. Calcola totale generale
         total_euro_all = df_global[col_euro].sum()
+        
+        # 3. Costruisci lista opzioni: PRIMA "TUTTI", POI i clienti ordinati per fatturato
         options = ["TUTTI I CLIENTI"] + top_cust_list.index.tolist()
         
         with col_left:
             st.markdown("#### Seleziona Analisi")
+            st.info("💡 Digita il nome per cercare")
             
+            # Selectbox con ricerca abilitata (Standard Streamlit)
             sel_target_cust = st.selectbox(
-                "Target:", 
+                "Cerca Cliente (Ord. per Fatturato):", 
                 options,
                 format_func=lambda x: f"{x} (€ {total_euro_all:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {top_cust_list[x]:,.0f})"
             )
@@ -350,29 +361,26 @@ if df_processed is not None and not df_global.empty:
                         hole=hole_size,
                         hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
                     )
-                    # --- FIX VISUALIZZAZIONE ETICHETTE ---
                     fig.update_traces(
-                        textposition='outside', # Etichette esterne per leggibilità
+                        textposition='outside',
                         textinfo='percent+label',
                         textfont_size=13
                     )
                     fig.update_layout(
                         height=500,
                         margin=dict(l=0,r=0,t=30,b=0),
-                        showlegend=False # Legenda nascosta per evitare clutter, nomi sono nelle etichette
+                        showlegend=False
                     )
 
                 st.plotly_chart(fig, use_container_width=True)
 
         with col_right:
-            # LOGICA DIFFERENZIATA: SINGOLO CLIENTE vs TUTTI I CLIENTI
             if not df_target.empty:
                 
-                # CASO 1: STIAMO GUARDANDO TUTTI I CLIENTI -> ESPLOSIONE PRODOTTO
+                # CASO 1: TUTTI I CLIENTI -> ESPLOSIONE PRODOTTO
                 if sel_target_cust == "TUTTI I CLIENTI":
                     st.markdown(f"#### 💥 Esplosione Prodotto (Chi lo compra?)")
                     
-                    # Lista prodotti ordinata per fatturato
                     all_prods_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
                     
                     target_prod = st.selectbox(
@@ -382,17 +390,14 @@ if df_processed is not None and not df_global.empty:
                     )
                     
                     if target_prod:
-                        # Filtra solo quel prodotto
                         df_prod_specific = df_target[df_target[col_prod] == target_prod]
                         
-                        # Raggruppa per CLIENTE
                         cust_breakdown = df_prod_specific.groupby(col_customer).agg({
                             col_cartons: 'sum',
                             col_kg: 'sum',
                             col_euro: 'sum'
                         }).reset_index().sort_values(col_euro, ascending=False)
                         
-                        # Calcolo % sul totale di quel prodotto
                         prod_tot_val = cust_breakdown[col_euro].sum()
                         cust_breakdown['% su Tot Prodotto'] = (cust_breakdown[col_euro] / prod_tot_val * 100)
 
