@@ -11,8 +11,8 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v16",
-    page_icon="💎",
+    page_title="EITA Analytics Pro v17",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,7 +80,7 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V16) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V17 - Safe Numerics) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
@@ -121,7 +121,7 @@ def smart_analyze_and_clean(df_in):
                 pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE (V16)
+# LOGICA DI AUTO-ASSEGNAZIONE
 def guess_column_role(df):
     cols = df.columns
     guesses = {
@@ -129,14 +129,12 @@ def guess_column_role(df):
         'euro': None, 'kg': None, 'cartons': None, 'date': None
     }
     
-    # --- GOLDEN RULES ---
     golden_rules = {
         'euro': ['Importo_Netto_TotRiga'], 
         'kg': ['Peso_Netto_TotRiga'],
         'cartons': ['Qta_Cartoni_Ordinato'],
         'date': ['Data_Ordine', 'Data_Fattura', 'Data_Consegna'], 
         'entity': ['Entity', 'Società'],
-        # Priorità al Cliente Fatturazione come richiesto
         'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Ragione Sociale'],
         'product': ['Descr_Articolo', 'Descrizione articolo']
     }
@@ -162,7 +160,7 @@ def guess_column_role(df):
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v16")
+st.sidebar.title("💎 Control Panel v17")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -181,7 +179,7 @@ if files:
     sel_file_name = st.sidebar.selectbox("1. File Sorgente", file_list, index=default_index)
     selected_file_obj = file_map[sel_file_name]
     
-    with st.spinner('Loading...'):
+    with st.spinner('Loading & Protecting...'):
         df_raw = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
         if df_raw is not None:
             df_processed = smart_analyze_and_clean(df_raw)
@@ -201,7 +199,6 @@ if df_processed is not None:
 
     with st.sidebar.expander("Verifica Colonne", expanded=True):
         col_entity = st.selectbox("Entità", all_cols, index=set_idx(guesses['entity'], all_cols))
-        # Label esplicita per il cliente
         col_customer = st.selectbox("Cliente (Fatturazione)", all_cols, index=set_idx(guesses['customer'], all_cols), help="Cerca: Descr_Cliente_Fat")
         col_prod = st.selectbox("Prodotto", all_cols, index=set_idx(guesses['product'], all_cols))
         col_euro = st.selectbox("Valore (€)", all_cols, index=set_idx(guesses['euro'], all_cols), help="Importo_Netto_TotRiga")
@@ -241,7 +238,7 @@ if df_processed is not None:
         if sel_custs:
             df_global = df_global[df_global[col_customer].astype(str).isin(sel_custs)]
 
-    # D. FILTRI AVANZATI
+    # D. FILTRI AVANZATI (ANTI-CRASH)
     st.sidebar.markdown("---")
     st.sidebar.subheader("4. Filtri Avanzati")
     
@@ -250,10 +247,23 @@ if df_processed is not None:
     filters_selected = st.sidebar.multiselect("Aggiungi criterio di filtro:", possible_filters)
     
     for f_col in filters_selected:
-        unique_vals = sorted(df_global[f_col].astype(str).unique())
-        sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals)
-        if sel_vals:
-            df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
+        # 1. CONTROLLO CARDINALITÀ (Evita crash browser)
+        unique_vals_count = df_global[f_col].nunique()
+        
+        if unique_vals_count > 1000:
+            st.sidebar.warning(f"⚠️ '{f_col}': troppi valori ({unique_vals_count}). Usa la ricerca:")
+            # Ricerca testuale invece di menu a tendina
+            search_query = st.sidebar.text_input(f"Cerca in {f_col}", key=f"search_{f_col}")
+            if search_query:
+                # Filtra se contiene il testo (case insensitive)
+                df_global = df_global[df_global[f_col].astype(str).str.contains(search_query, case=False, na=False)]
+        else:
+            # Menu normale se pochi valori
+            unique_vals = sorted(df_global[f_col].astype(str).unique())
+            # KEY UNICA per evitare errori di stato Streamlit
+            sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals, key=f"filter_{f_col}")
+            if sel_vals:
+                df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
 
 
 # --- 4. DASHBOARD BODY ---
@@ -261,9 +271,14 @@ st.title(f"📊 Report: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
 
 if df_processed is not None and not df_global.empty:
 
-    # --- KPI MACRO ---
-    kpi_euro = df_global[col_euro].sum()
-    kpi_kg = df_global[col_kg].sum()
+    # --- KPI MACRO SAFE ---
+    # Forza conversione a numerico per evitare errori di somma stringhe
+    try:
+        kpi_euro = pd.to_numeric(df_global[col_euro], errors='coerce').sum()
+        kpi_kg = pd.to_numeric(df_global[col_kg], errors='coerce').sum()
+    except:
+        kpi_euro = 0
+        kpi_kg = 0
     
     col_ord_num = next((c for c in df_global.columns if "Numero_Ordine" in c), None)
     kpi_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
@@ -271,9 +286,14 @@ if df_processed is not None and not df_global.empty:
     
     # Top Cliente
     if col_customer:
-        top_client_row = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(1)
-        top_client_name = top_client_row.index[0] if not top_client_row.empty else "-"
-        top_client_val = top_client_row.values[0] if not top_client_row.empty else 0
+        try:
+            # Raggruppa assicurandosi che i valori siano numerici
+            df_global['safe_euro'] = pd.to_numeric(df_global[col_euro], errors='coerce').fillna(0)
+            top_client_row = df_global.groupby(col_customer)['safe_euro'].sum().sort_values(ascending=False).head(1)
+            top_client_name = top_client_row.index[0] if not top_client_row.empty else "-"
+            top_client_val = top_client_row.values[0] if not top_client_row.empty else 0
+        except:
+             top_client_name, top_client_val = "Errore Dati", 0
     else:
         top_client_name, top_client_val = "-", 0
     
@@ -290,157 +310,157 @@ if df_processed is not None and not df_global.empty:
     
     col_left, col_right = st.columns([1, 2])
     
-    # PREPARAZIONE DATI PER SELEZIONE CLIENTE (o TUTTI)
+    # PREPARAZIONE DATI
     if col_customer:
-        # 1. Raggruppa per cliente e somma fatturato
-        top_cust_list = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
-        
-        # 2. Calcola totale generale
-        total_euro_all = df_global[col_euro].sum()
-        
-        # 3. Costruisci lista opzioni: PRIMA "TUTTI", POI i clienti ordinati per fatturato
-        options = ["TUTTI I CLIENTI"] + top_cust_list.index.tolist()
-        
-        with col_left:
-            st.markdown("#### Seleziona Analisi")
-            st.info("💡 Digita il nome per cercare")
+        try:
+            # Ricalcolo sicuro per le liste
+            df_global['safe_euro'] = pd.to_numeric(df_global[col_euro], errors='coerce').fillna(0)
+            top_cust_list = df_global.groupby(col_customer)['safe_euro'].sum().sort_values(ascending=False)
+            total_euro_all = df_global['safe_euro'].sum()
             
-            # Selectbox con ricerca abilitata (Standard Streamlit)
-            sel_target_cust = st.selectbox(
-                "Cerca Cliente (Ord. per Fatturato):", 
-                options,
-                format_func=lambda x: f"{x} (€ {total_euro_all:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {top_cust_list[x]:,.0f})"
-            )
+            options = ["TUTTI I CLIENTI"] + top_cust_list.index.tolist()
             
-            # --- DATASET TARGET ---
-            if sel_target_cust == "TUTTI I CLIENTI":
-                df_target = df_global 
-                chart_title_suffix = "TUTTI I CLIENTI"
-            else:
-                df_target = df_global[df_global[col_customer] == sel_target_cust]
-                chart_title_suffix = sel_target_cust
-
-            # --- GRAFICO DINAMICO ---
-            if not df_target.empty:
-                st.write("") 
-                chart_type = st.radio("Tipo Visualizzazione:", ["Barre", "Torta", "Donut"], horizontal=True, label_visibility="collapsed")
+            with col_left:
+                st.markdown("#### Seleziona Analisi")
+                st.info("💡 Digita il nome per cercare")
                 
-                # Aggregazione
-                prod_chart_data = df_target.groupby(col_prod).agg({
-                    col_euro: 'sum',
-                    col_kg: 'sum',
-                    col_cartons: 'sum'
-                }).reset_index().sort_values(col_euro, ascending=False).head(10) # Top 10
+                sel_target_cust = st.selectbox(
+                    "Cerca Cliente (Ord. per Fatturato):", 
+                    options,
+                    format_func=lambda x: f"{x} (€ {total_euro_all:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {top_cust_list[x]:,.0f})"
+                )
                 
-                if chart_type == "Barre":
-                    fig = px.bar(
-                        prod_chart_data, 
-                        x=col_euro, 
-                        y=col_prod, 
-                        orientation='h',
-                        title=f"Top 10 Prodotti ({chart_title_suffix})",
-                        text_auto='.2s',
-                        hover_data={col_euro: ':,.2f', col_kg: ':,.0f', col_cartons: ':,.0f'}
-                    )
-                    fig.update_layout(
-                        height=500, 
-                        yaxis=dict(autorange="reversed"),
-                        margin=dict(l=0,r=0,t=30,b=0),
-                        xaxis_title="Fatturato (€)",
-                        yaxis_title=None
-                    )
-                    fig.update_traces(marker_color='#004e92')
-                
-                elif chart_type in ["Torta", "Donut"]:
-                    hole_size = 0.4 if chart_type == "Donut" else 0
-                    fig = px.pie(
-                        prod_chart_data,
-                        values=col_euro,
-                        names=col_prod,
-                        title=f"Top 10 Prodotti ({chart_title_suffix})",
-                        hole=hole_size,
-                        hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
-                    )
-                    fig.update_traces(
-                        textposition='outside',
-                        textinfo='percent+label',
-                        textfont_size=13
-                    )
-                    fig.update_layout(
-                        height=500,
-                        margin=dict(l=0,r=0,t=30,b=0),
-                        showlegend=False
-                    )
-
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col_right:
-            if not df_target.empty:
-                
-                # CASO 1: TUTTI I CLIENTI -> ESPLOSIONE PRODOTTO
+                # DATASET TARGET
                 if sel_target_cust == "TUTTI I CLIENTI":
-                    st.markdown(f"#### 💥 Esplosione Prodotto (Chi lo compra?)")
+                    df_target = df_global 
+                    chart_title_suffix = "TUTTI I CLIENTI"
+                else:
+                    df_target = df_global[df_global[col_customer] == sel_target_cust]
+                    chart_title_suffix = sel_target_cust
+
+                # GRAFICO
+                if not df_target.empty:
+                    st.write("") 
+                    chart_type = st.radio("Tipo Visualizzazione:", ["Barre", "Torta", "Donut"], horizontal=True, label_visibility="collapsed")
                     
-                    all_prods_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
+                    # Aggregazione
+                    prod_chart_data = df_target.groupby(col_prod).agg({
+                        col_euro: 'sum',
+                        col_kg: 'sum',
+                        col_cartons: 'sum'
+                    }).reset_index().sort_values(col_euro, ascending=False).head(10)
                     
-                    target_prod = st.selectbox(
-                        "Seleziona Prodotto per Dettaglio Clienti:", 
-                        all_prods_sorted.index.tolist(),
-                        format_func=lambda x: f"{x} (Tot: € {all_prods_sorted[x]:,.0f})"
-                    )
+                    if chart_type == "Barre":
+                        fig = px.bar(
+                            prod_chart_data, 
+                            x=col_euro, 
+                            y=col_prod, 
+                            orientation='h',
+                            title=f"Top 10 Prodotti ({chart_title_suffix})",
+                            text_auto='.2s',
+                            hover_data={col_euro: ':,.2f', col_kg: ':,.0f', col_cartons: ':,.0f'}
+                        )
+                        fig.update_layout(
+                            height=500, 
+                            yaxis=dict(autorange="reversed"),
+                            margin=dict(l=0,r=0,t=30,b=0),
+                            xaxis_title="Fatturato (€)",
+                            yaxis_title=None
+                        )
+                        fig.update_traces(marker_color='#004e92')
                     
-                    if target_prod:
-                        df_prod_specific = df_target[df_target[col_prod] == target_prod]
+                    elif chart_type in ["Torta", "Donut"]:
+                        hole_size = 0.4 if chart_type == "Donut" else 0
+                        fig = px.pie(
+                            prod_chart_data,
+                            values=col_euro,
+                            names=col_prod,
+                            title=f"Top 10 Prodotti ({chart_title_suffix})",
+                            hole=hole_size,
+                            hover_data={col_kg: ':,.0f', col_cartons: ':,.0f'}
+                        )
+                        fig.update_traces(
+                            textposition='outside',
+                            textinfo='percent+label',
+                            textfont_size=13
+                        )
+                        fig.update_layout(
+                            height=500,
+                            margin=dict(l=0,r=0,t=30,b=0),
+                            showlegend=False
+                        )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with col_right:
+                if not df_target.empty:
+                    
+                    # CASO 1: TUTTI -> ESPLOSIONE
+                    if sel_target_cust == "TUTTI I CLIENTI":
+                        st.markdown(f"#### 💥 Esplosione Prodotto (Chi lo compra?)")
                         
-                        cust_breakdown = df_prod_specific.groupby(col_customer).agg({
+                        all_prods_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
+                        
+                        target_prod = st.selectbox(
+                            "Seleziona Prodotto per Dettaglio Clienti:", 
+                            all_prods_sorted.index.tolist(),
+                            format_func=lambda x: f"{x} (Tot: € {all_prods_sorted[x]:,.0f})"
+                        )
+                        
+                        if target_prod:
+                            df_prod_specific = df_target[df_target[col_prod] == target_prod]
+                            
+                            cust_breakdown = df_prod_specific.groupby(col_customer).agg({
+                                col_cartons: 'sum',
+                                col_kg: 'sum',
+                                col_euro: 'sum'
+                            }).reset_index().sort_values(col_euro, ascending=False)
+                            
+                            prod_tot_val = cust_breakdown[col_euro].sum()
+                            cust_breakdown['% su Tot Prodotto'] = (cust_breakdown[col_euro] / prod_tot_val * 100)
+
+                            st.dataframe(
+                                cust_breakdown,
+                                column_config={
+                                    col_customer: "Cliente",
+                                    col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
+                                    col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
+                                    col_euro: st.column_config.NumberColumn("Spesa (€)", format="€ %.2f"),
+                                    "% su Tot Prodotto": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
+                                },
+                                hide_index=True,
+                                use_container_width=True,
+                                height=500
+                            )
+
+                    # CASO 2: SINGOLO -> LISTA ACQUISTI
+                    else:
+                        st.markdown(f"#### Dettaglio Acquisti: **{chart_title_suffix}**")
+                        
+                        prod_stats = df_target.groupby(col_prod).agg({
                             col_cartons: 'sum',
                             col_kg: 'sum',
                             col_euro: 'sum'
                         }).reset_index().sort_values(col_euro, ascending=False)
                         
-                        prod_tot_val = cust_breakdown[col_euro].sum()
-                        cust_breakdown['% su Tot Prodotto'] = (cust_breakdown[col_euro] / prod_tot_val * 100)
-
+                        tot_val = prod_stats[col_euro].sum()
+                        prod_stats['%'] = (prod_stats[col_euro] / tot_val * 100)
+                        
                         st.dataframe(
-                            cust_breakdown,
+                            prod_stats,
                             column_config={
-                                col_customer: "Cliente",
+                                col_prod: "Prodotto",
                                 col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
                                 col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
-                                col_euro: st.column_config.NumberColumn("Spesa (€)", format="€ %.2f"),
-                                "% su Tot Prodotto": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
+                                col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
+                                "%": st.column_config.ProgressColumn("Peso %", format="%.1f%%", min_value=0, max_value=100)
                             },
                             hide_index=True,
                             use_container_width=True,
                             height=500
                         )
-
-                # CASO 2: SINGOLO CLIENTE -> LISTA PRODOTTI COMPRATI
-                else:
-                    st.markdown(f"#### Dettaglio Acquisti: **{chart_title_suffix}**")
-                    
-                    prod_stats = df_target.groupby(col_prod).agg({
-                        col_cartons: 'sum',
-                        col_kg: 'sum',
-                        col_euro: 'sum'
-                    }).reset_index().sort_values(col_euro, ascending=False)
-                    
-                    tot_val = prod_stats[col_euro].sum()
-                    prod_stats['%'] = (prod_stats[col_euro] / tot_val * 100)
-                    
-                    st.dataframe(
-                        prod_stats,
-                        column_config={
-                            col_prod: "Prodotto",
-                            col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
-                            col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
-                            col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
-                            "%": st.column_config.ProgressColumn("Peso %", format="%.1f%%", min_value=0, max_value=100)
-                        },
-                        hide_index=True,
-                        use_container_width=True,
-                        height=500
-                    )
+        except Exception as e:
+            st.error(f"Errore calcolo dettagli: {str(e)}")
 
 elif df_processed is not None:
     st.warning("Nessun dato trovato nel periodo selezionato.")
