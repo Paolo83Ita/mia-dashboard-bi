@@ -91,7 +91,10 @@ if files:
     selected_file_obj = file_map[sel_file_name]
     
     with st.spinner('Accesso al Database...'):
-        df_original = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
+        # Usiamo una copia locale per evitare di modificare la cache
+        df_loaded = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
+        if df_loaded is not None:
+            df_original = df_loaded.copy()
 else:
     st.error("Nessun file trovato.")
 
@@ -116,6 +119,22 @@ if df_original is not None:
     col_euro = st.sidebar.selectbox("Colonna Valore (€)", cols, index=get_idx(['eur', 'valore', 'importo', 'amount', 'totale'], cols))
     col_kg = st.sidebar.selectbox("Colonna Quantità (Cartoni/Kg)", cols, index=get_idx(['qty', 'qta', 'carton', 'pezzi', 'kg'], cols))
     col_data = st.sidebar.selectbox("Colonna Data", cols, index=get_idx(['data', 'date', 'doc'], cols))
+
+    # --- FIX CRITICO: PULIZIA NUMERI ITALIANI ---
+    # Questo blocco risolve l'errore ValueError trasformando le colonne "Testo" in "Numeri"
+    try:
+        for col_to_fix in [col_euro, col_kg]:
+            if df_original[col_to_fix].dtype == 'object':
+                # Rimuove € e spazi
+                df_original[col_to_fix] = df_original[col_to_fix].astype(str).str.replace('€', '').str.replace(' ', '')
+                # Se c'è la virgola, assumiamo formato italiano: rimuovi punti migliaia, cambia virgola in punto
+                if df_original[col_to_fix].str.contains(',', regex=False).any():
+                     df_original[col_to_fix] = df_original[col_to_fix].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+                # Converte in numero, mettendo 0 dove non riesce
+                df_original[col_to_fix] = pd.to_numeric(df_original[col_to_fix], errors='coerce').fillna(0)
+    except Exception as e:
+        st.sidebar.error(f"Errore nella conversione numeri: {e}")
+    # --------------------------------------------
 
     # C. FILTRI GLOBALI (Gerarchici)
     st.sidebar.markdown("---")
@@ -175,48 +194,57 @@ if df_original is not None and not df_global.empty:
         df_cust_summary = df_global.groupby(col_customer)[[col_euro]].sum().sort_values(col_euro, ascending=False)
         
         # Selectbox dinamica ordinata per fatturato
-        target_customer = st.selectbox(
-            "Scegli Cliente:", 
-            df_cust_summary.index.tolist(),
-            format_func=lambda x: f"{x} (€ {df_cust_summary.loc[x, col_euro]:,.0f})"
-        )
-        
-        # Mini KPI del cliente
-        cust_total = df_cust_summary.loc[target_customer, col_euro]
-        st.metric(f"Totale {target_customer}", f"€ {cust_total:,.2f}")
-        
-        # Grafico Trend Cliente (se ci sono date)
-        df_cust_trend = df_global[df_global[col_customer] == target_customer].groupby(col_data)[col_euro].sum().reset_index()
-        fig_trend = px.bar(df_cust_trend, x=col_data, y=col_euro, title="Andamento Ordini")
-        fig_trend.update_layout(height=250, xaxis_title=None, yaxis_title=None, margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_trend, use_container_width=True)
+        if not df_cust_summary.empty:
+            target_customer = st.selectbox(
+                "Scegli Cliente:", 
+                df_cust_summary.index.tolist(),
+                format_func=lambda x: f"{x} (€ {df_cust_summary.loc[x, col_euro]:,.0f})"
+            )
+            
+            # Mini KPI del cliente
+            cust_total = df_cust_summary.loc[target_customer, col_euro]
+            st.metric(f"Totale {target_customer}", f"€ {cust_total:,.2f}")
+            
+            # Grafico Trend Cliente (se ci sono date)
+            df_cust_trend = df_global[df_global[col_customer] == target_customer].groupby(col_data)[col_euro].sum().reset_index()
+            fig_trend = px.bar(df_cust_trend, x=col_data, y=col_euro, title="Andamento Ordini")
+            fig_trend.update_layout(height=250, xaxis_title=None, yaxis_title=None, margin=dict(l=0,r=0,t=30,b=0))
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.warning("Nessun cliente trovato con i filtri attuali.")
+            target_customer = None
 
     with col_right:
-        st.success(f"2. Dettaglio Prodotti per: **{target_customer}**")
-        
-        # Filtriamo solo per il cliente selezionato
-        df_detail = df_global[df_global[col_customer] == target_customer]
-        
-        # Raggruppiamo per Prodotto (SOMMA)
-        df_prod_summary = df_detail.groupby(col_prod)[[col_kg, col_euro]].sum().reset_index()
-        df_prod_summary = df_prod_summary.sort_values(col_euro, ascending=False)
-        
-        # Calcolo % Incidenza
-        df_prod_summary['% Incidenza'] = (df_prod_summary[col_euro] / df_prod_summary[col_euro].sum() * 100).map('{:.1f}%'.format)
-        
-        # Formattazione per visualizzazione
-        st.dataframe(
-            df_prod_summary,
-            column_config={
-                col_prod: "Prodotto",
-                col_kg: st.column_config.NumberColumn("Quantità (Cartoni/Kg)", format="%.0f"),
-                col_euro: st.column_config.NumberColumn("Valore Totale (€)", format="€ %.2f"),
-                "% Incidenza": "Impatto %"
-            },
-            use_container_width=True,
-            hide_index=True,
-            height=400
-        )
+        if target_customer:
+            st.success(f"2. Dettaglio Prodotti per: **{target_customer}**")
+            
+            # Filtriamo solo per il cliente selezionato
+            df_detail = df_global[df_global[col_customer] == target_customer]
+            
+            # Raggruppiamo per Prodotto (SOMMA)
+            df_prod_summary = df_detail.groupby(col_prod)[[col_kg, col_euro]].sum().reset_index()
+            df_prod_summary = df_prod_summary.sort_values(col_euro, ascending=False)
+            
+            # Calcolo % Incidenza
+            total_prod_sum = df_prod_summary[col_euro].sum()
+            if total_prod_sum > 0:
+                df_prod_summary['% Incidenza'] = (df_prod_summary[col_euro] / total_prod_sum * 100).map('{:.1f}%'.format)
+            else:
+                df_prod_summary['% Incidenza'] = "0%"
+            
+            # Formattazione per visualizzazione
+            st.dataframe(
+                df_prod_summary,
+                column_config={
+                    col_prod: "Prodotto",
+                    col_kg: st.column_config.NumberColumn("Quantità (Cartoni/Kg)", format="%.0f"),
+                    col_euro: st.column_config.NumberColumn("Valore Totale (€)", format="€ %.2f"),
+                    "% Incidenza": "Impatto %"
+                },
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
 
     st.markdown("---")
     
