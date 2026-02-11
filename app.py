@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v10",
+    page_title="EITA Analytics Pro v11",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,20 +80,23 @@ def load_dataset(file_id, modified_time, _service):
     except Exception as e:
         return None
 
-# --- FUNZIONE DI PULIZIA & ANALISI (V10 - Custom Legend) ---
+# --- FUNZIONE DI PULIZIA & ANALISI (V11 - Cartoni Support) ---
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     
-    # 1. CLEANING BASE
+    # Target specifici che sappiamo essere numerici dalla legenda
+    target_numeric_cols = [
+        'Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 
+        'Qta_Cartoni_Ordinato', 'Prezzo_Netto'
+    ]
+    
     for col in df.columns:
-        # Skip se la colonna è nella ignore list (es. Numero Pallet che è fuorviante)
-        if col in ['Numero_Pallet', 'Sovrapponibile']:
-            continue
+        if col in ['Numero_Pallet', 'Sovrapponibile']: continue # Ignore list
 
         sample = df[col].dropna().astype(str).head(100).tolist()
         if not sample: continue
 
-        # A. DATE (Format check)
+        # A. DATE
         if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
             try:
                 df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
@@ -101,68 +104,55 @@ def smart_analyze_and_clean(df_in):
             except:
                 pass
         
-        # B. NUMERI (Euro/Quantità) - Pulizia € e virgole
-        # Priorità alle colonne che sappiamo essere numeriche dalla legenda
-        target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto']
-        
+        # B. NUMERI (Incluse nuove colonne Cartoni)
         is_target_numeric = any(t in col for t in target_numeric_cols)
         looks_numeric = any(c.isdigit() for s in sample for c in s)
 
         if is_target_numeric or looks_numeric:
             try:
-                # Pulizia aggressiva
                 clean_col = df[col].astype(str).str.replace('€', '').str.replace(' ', '')
                 if clean_col.str.contains(',', regex=False).any():
                     clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
                 
                 converted = pd.to_numeric(clean_col, errors='coerce')
                 
-                # Se era un target o se sembra numero
                 if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
                     df[col] = converted.fillna(0)
             except:
                 pass
     return df
 
-# LOGICA DI AUTO-ASSEGNAZIONE CON LEGENDA (V10)
+# LOGICA DI AUTO-ASSEGNAZIONE (V11)
 def guess_column_role(df):
     cols = df.columns
     guesses = {
         'entity': None, 'customer': None, 'product': None, 
-        'euro': None, 'kg': None, 'date': None
+        'euro': None, 'kg': None, 'cartons': None, 'date': None
     }
     
-    # --- DIZIONARIO GOLDEN (Dalla tua Legenda) ---
-    # Cerchiamo PRIMA le colonne esatte fornite
+    # --- DIZIONARIO GOLDEN ---
     golden_rules = {
-        'euro': ['Importo_Netto_TotRiga'], # Priorità assoluta al Totale Riga
-        'kg': ['Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato'],
-        'date': ['Data_Ordine', 'Data_Fattura', 'Data_Consegna'], # Ordine come default
+        'euro': ['Importo_Netto_TotRiga'], 
+        'kg': ['Peso_Netto_TotRiga'],
+        'cartons': ['Qta_Cartoni_Ordinato'], # Nuova regola specifica
+        'date': ['Data_Ordine', 'Data_Fattura', 'Data_Consegna'], 
         'entity': ['Entity', 'Società'],
-        'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Ragione Sociale'], # Meglio Descrizione che Codice
-        'product': ['Descr_Articolo', 'Descrizione articolo'] # Meglio Descrizione che Codice
+        'customer': ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Ragione Sociale'],
+        'product': ['Descr_Articolo', 'Descrizione articolo']
     }
 
-    # 1. CERCA COLONNE ESATTE (Match perfetto)
+    # 1. CERCA COLONNE ESATTE
     for role, targets in golden_rules.items():
         for t in targets:
             if t in cols:
                 guesses[role] = t
-                break # Trovato il migliore, stop
+                break
     
-    # 2. EURISTICA (Fallback se non trova i nomi esatti)
-    # Se non abbiamo trovato colonna tramite Golden Rules, usiamo la vecchia logica
-    kw_euro = ['eur', 'valore', 'importo', 'totale', 'amount', 'prezzo', 'fatturato']
-    kw_kg = ['kg', 'qta', 'qty', 'quant', 'peso', 'carton', 'pezzi']
-    kw_ent = ['entit', 'societ', 'company']
-    kw_cust = ['client', 'customer', 'ragione', 'intestatario']
-    kw_prod = ['prod', 'artic', 'desc', 'item', 'material']
-    kw_ignore = ['cod_', 'numero_', 'sett.', 'mese', 'anno', 'stato'] # Ignora codici se possibile per descrizioni
-
+    # 2. EURISTICA (Fallback)
+    kw_cartons = ['carton', 'colli', 'ct', 'box']
+    
     for col in cols:
         col_lower = col.lower()
-        
-        # Skip se già assegnato
         if any(guesses.values()) and col in guesses.values(): continue
 
         if not guesses['date'] and pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -170,34 +160,22 @@ def guess_column_role(df):
             continue
 
         if pd.api.types.is_numeric_dtype(df[col]):
-            if not guesses['euro'] and any(k in col_lower for k in kw_euro) and 'cod' not in col_lower:
-                guesses['euro'] = col
-            elif not guesses['kg'] and any(k in col_lower for k in kw_kg) and 'cod' not in col_lower:
-                guesses['kg'] = col
-            continue
-
-        if not guesses['entity'] and any(k in col_lower for k in kw_ent):
-            guesses['entity'] = col
-        elif not guesses['customer'] and any(k in col_lower for k in kw_cust) and 'cod' not in col_lower:
-             guesses['customer'] = col
-        elif not guesses['product'] and any(k in col_lower for k in kw_prod) and 'cod' not in col_lower:
-             guesses['product'] = col
+            # Logica base per numeri
+            pass 
 
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("💎 Control Panel v10")
+st.sidebar.title("💎 Control Panel v11")
 files, service = get_drive_files_list()
 df_processed = None
 
-# A. SELECT FILE (PRIORITÀ A 'From_Order_to_Invoice')
+# A. SELECT FILE
 if files:
     file_map = {f['name']: f for f in files}
     file_list = list(file_map.keys())
     
-    # Cerca il file target
     target_file = "From_Order_to_Invoice"
-    # Trova indice parziale (es. se si chiama "From_Order_to_Invoice_v2.xlsx")
     default_index = 0
     for i, fname in enumerate(file_list):
         if target_file.lower() in fname.lower():
@@ -207,7 +185,7 @@ if files:
     sel_file_name = st.sidebar.selectbox("1. File Sorgente", file_list, index=default_index)
     selected_file_obj = file_map[sel_file_name]
     
-    with st.spinner('Analisi e Mappatura Legenda...'):
+    with st.spinner('Loading...'):
         df_raw = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
         if df_raw is not None:
             df_processed = smart_analyze_and_clean(df_raw)
@@ -215,7 +193,7 @@ else:
     st.error("Nessun file trovato.")
 
 # B. MAPPATURA
-col_entity, col_customer, col_prod, col_euro, col_kg, col_data = [None]*6
+col_entity, col_customer, col_prod, col_euro, col_kg, col_cartons, col_data = [None]*7
 
 if df_processed is not None:
     guesses = guess_column_role(df_processed)
@@ -225,13 +203,14 @@ if df_processed is not None:
     
     def set_idx(guess, options): return options.index(guess) if guess in options else 0
 
-    with st.sidebar.expander("Verifica Colonne (Auto)", expanded=True):
+    with st.sidebar.expander("Verifica Colonne", expanded=True):
         col_entity = st.selectbox("Entità", all_cols, index=set_idx(guesses['entity'], all_cols))
         col_customer = st.selectbox("Cliente", all_cols, index=set_idx(guesses['customer'], all_cols))
         col_prod = st.selectbox("Prodotto", all_cols, index=set_idx(guesses['product'], all_cols))
-        col_euro = st.selectbox("Valore (€)", all_cols, index=set_idx(guesses['euro'], all_cols), help="Cerca: Importo_Netto_TotRiga")
-        col_kg = st.selectbox("Quantità (Kg)", all_cols, index=set_idx(guesses['kg'], all_cols), help="Cerca: Peso_Netto_TotRiga")
-        col_data = st.selectbox("Data Riferimento", all_cols, index=set_idx(guesses['date'], all_cols), help="Cerca: Data_Ordine")
+        col_euro = st.selectbox("Valore (€)", all_cols, index=set_idx(guesses['euro'], all_cols), help="Importo_Netto_TotRiga")
+        col_kg = st.selectbox("Peso (Kg)", all_cols, index=set_idx(guesses['kg'], all_cols), help="Peso_Netto_TotRiga")
+        col_cartons = st.selectbox("Cartoni (Qty)", all_cols, index=set_idx(guesses['cartons'], all_cols), help="Qta_Cartoni_Ordinato")
+        col_data = st.selectbox("Data", all_cols, index=set_idx(guesses['date'], all_cols), help="Data_Ordine")
 
     # C. FILTRI
     st.sidebar.markdown("---")
@@ -242,14 +221,12 @@ if df_processed is not None:
     # ENTITÀ
     if col_entity:
         ents = sorted(df_global[col_entity].astype(str).unique())
-        # Default EITA
         idx_e = ents.index('EITA') if 'EITA' in ents else 0
         sel_ent = st.sidebar.selectbox("Filtra Entità", ents, index=idx_e)
         df_global = df_global[df_global[col_entity].astype(str) == sel_ent]
 
-    # DATA (Default richiesto: 01/01/2026 - 31/01/2026)
+    # DATA
     if col_data:
-        # Date di default fisse come richiesto
         def_start = datetime.date(2026, 1, 1)
         def_end = datetime.date(2026, 1, 31)
         
@@ -273,76 +250,88 @@ st.title(f"📊 Report: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
 
 if df_processed is not None and not df_global.empty:
 
-    # --- KPI MACRO (Richiesti) ---
-    # 1. Fatturato Generale Periodo (Sum Importo_Netto_TotRiga)
+    # --- KPI MACRO ---
     kpi_euro = df_global[col_euro].sum()
+    kpi_kg = df_global[col_kg].sum()
     
-    # 2. Quantità Totale KG (Sum Peso_Netto_TotRiga)
-    kpi_qty = df_global[col_kg].sum()
-    
-    # 3. N° Totale Ordini (Count Unique Numero_Ordine se possibile, altrimenti righe)
-    # Cerchiamo colonna Numero_Ordine per conteggio preciso
     col_ord_num = next((c for c in df_global.columns if "Numero_Ordine" in c), None)
-    if col_ord_num:
-        kpi_orders = df_global[col_ord_num].nunique()
-        lbl_orders = "N° Ordini"
-    else:
-        kpi_orders = len(df_global)
-        lbl_orders = "N° Righe"
+    kpi_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
+    lbl_orders = "N° Ordini" if col_ord_num else "N° Righe"
     
-    # 4. Top Cliente (Per Fatturato)
+    # Top Cliente
     if col_customer:
         top_client_row = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(1)
-        if not top_client_row.empty:
-            top_client_name = top_client_row.index[0]
-            top_client_val = top_client_row.values[0]
-        else:
-            top_client_name, top_client_val = "-", 0
+        top_client_name = top_client_row.index[0] if not top_client_row.empty else "-"
+        top_client_val = top_client_row.values[0] if not top_client_row.empty else 0
     else:
         top_client_name, top_client_val = "-", 0
     
-    # VISUALIZZAZIONE KPI
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("1. Fatturato Totale", f"€ {kpi_euro:,.2f}", help="Somma Importo_Netto_TotRiga")
-    c2.metric("2. Quantità Totale", f"{kpi_qty:,.0f} Kg", help="Somma Peso_Netto_TotRiga")
-    c3.metric(f"3. {lbl_orders}", f"{kpi_orders:,}", help="Ordini unici nel periodo")
-    
-    short_name = top_client_name[:18] + '..' if len(str(top_client_name))>18 else str(top_client_name)
-    c4.metric("4. Top Cliente", short_name, f"€ {top_client_val:,.0f}")
+    c1.metric("1. Fatturato Totale", f"€ {kpi_euro:,.2f}")
+    c2.metric("2. Quantità Totale", f"{kpi_kg:,.0f} Kg")
+    c3.metric(f"3. {lbl_orders}", f"{kpi_orders:,}")
+    c4.metric("4. Top Cliente", top_client_name[:18] + '..' if len(str(top_client_name))>18 else str(top_client_name), f"€ {top_client_val:,.0f}")
 
     st.markdown("---")
     
     # SEZIONE DRILL DOWN
-    st.subheader("🔍 Analisi Dettaglio")
+    st.subheader("🔍 Analisi Dettaglio Cliente/Prodotto")
     
     col_left, col_right = st.columns([1, 2])
     
     with col_left:
-        st.markdown("#### Selezione Cliente")
+        st.markdown("#### Seleziona Cliente")
         top_cust_list = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
         
         sel_target_cust = st.selectbox(
-            "Seleziona Cliente:", 
+            "Cliente:", 
             top_cust_list.index.tolist(),
             format_func=lambda x: f"{x} (€ {top_cust_list[x]:,.0f})"
         )
         
-        # Chart Trend
-        if col_data and sel_target_cust:
+        # --- NUOVO GRAFICO: TOP PRODOTTI ---
+        if sel_target_cust:
             df_c = df_global[df_global[col_customer] == sel_target_cust]
-            daily = df_c.groupby(col_data)[col_euro].sum().reset_index()
-            fig = px.bar(daily, x=col_data, y=col_euro, title="Trend Giornaliero")
-            fig.update_layout(height=250, margin=dict(l=0,r=0,t=30,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            
+            # Aggregazione per Prodotto
+            prod_chart_data = df_c.groupby(col_prod).agg({
+                col_euro: 'sum',
+                col_kg: 'sum',
+                col_cartons: 'sum'
+            }).reset_index().sort_values(col_euro, ascending=False).head(10) # Top 10
+            
+            fig = px.bar(
+                prod_chart_data, 
+                x=col_euro, 
+                y=col_prod, 
+                orientation='h',
+                title="Top 10 Prodotti (per Valore €)",
+                text_auto='.2s',
+                hover_data={
+                    col_euro: ':,.2f',
+                    col_kg: ':,.0f',
+                    col_cartons: ':,.0f'
+                }
+            )
+            fig.update_layout(
+                height=400, 
+                yaxis=dict(autorange="reversed"), # Primo in alto
+                margin=dict(l=0,r=0,t=30,b=0),
+                xaxis_title="Fatturato (€)",
+                yaxis_title=None
+            )
+            fig.update_traces(marker_color='#004e92')
             st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
         if sel_target_cust:
-            st.markdown(f"#### Prodotti: **{sel_target_cust}**")
+            st.markdown(f"#### Dettaglio Completo: **{sel_target_cust}**")
             
             df_det = df_global[df_global[col_customer] == sel_target_cust]
             
-            # Pivot prodotti
+            # Pivot prodotti completo
             prod_stats = df_det.groupby(col_prod).agg({
+                col_cartons: 'sum',
                 col_kg: 'sum',
                 col_euro: 'sum'
             }).reset_index().sort_values(col_euro, ascending=False)
@@ -354,13 +343,14 @@ if df_processed is not None and not df_global.empty:
                 prod_stats,
                 column_config={
                     col_prod: "Prodotto",
-                    col_kg: st.column_config.NumberColumn("Kg Totali", format="%.0f"),
-                    col_euro: st.column_config.NumberColumn("Valore Totale", format="€ %.2f"),
-                    "%": st.column_config.ProgressColumn("Peso %", format="%.0f", min_value=0, max_value=100)
+                    col_cartons: st.column_config.NumberColumn("Cartoni", format="%.0f"),
+                    col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
+                    col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
+                    "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100)
                 },
                 hide_index=True,
                 use_container_width=True,
-                height=400
+                height=500
             )
 
 elif df_processed is not None:
