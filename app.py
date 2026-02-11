@@ -7,32 +7,32 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import datetime
+import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE ---
 st.set_page_config(
-    page_title="EITA Analytics Pro",
+    page_title="EITA Analytics Pro v6",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS ottimizzato per tabelle compatte e leggibili
 st.markdown("""
 <style>
     .block-container {padding-top: 1rem; padding-bottom: 3rem;}
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
         border-left: 5px solid #004e92;
         padding: 10px;
-        box-shadow: 1px 1px 3px rgba(0,0,0,0.1);
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
     h1, h2, h3 {font-family: 'Segoe UI', sans-serif; color: #004e92;}
-    /* Tabella Compatta */
-    .dataframe {font-size: 0.9rem !important;}
+    .stAlert {padding: 0.5rem;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. MOTORE DATI (CACHE) ---
+# --- 2. MOTORE DATI ---
 @st.cache_data(ttl=300)
 def get_drive_files_list():
     try:
@@ -66,193 +66,204 @@ def load_dataset(file_id, modified_time, _service):
         except:
             fh.seek(0)
             df = pd.read_csv(fh)
-        
-        # Conversione date robusta
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                try:
-                    df[col] = pd.to_datetime(df[col], dayfirst=True)
-                except:
-                    pass
         return df
     except Exception as e:
         return None
 
-# --- 3. SIDEBAR: SETUP RIGOROSO ---
-st.sidebar.title("🎯 Control Panel")
+# --- FUNZIONE DI PULIZIA INTELLIGENTE ---
+def smart_clean_dataframe(df_in):
+    df = df_in.copy()
+    
+    # 1. Trova e converti Date
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Prova a convertire in data se contiene indicatori tipici
+            if df[col].astype(str).str.contains(r'\d{2}[/-]\d{2}[/-]\d{4}', regex=True).any():
+                try:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                except:
+                    pass
 
+    # 2. Trova e converti Numeri (Euro, Virgole)
+    # Cerchiamo colonne Object che sembrano numeri
+    for col in df.select_dtypes(include=['object']).columns:
+        sample = df[col].astype(str).head(20).tolist()
+        # Se contiene € o virgole e numeri
+        if any(('€' in s or ',' in s) and any(c.isdigit() for c in s) for s in sample):
+            try:
+                # Pulisci: via € e spazi
+                clean_col = df[col].astype(str).str.replace('€', '').str.replace(' ', '')
+                # Gestione virgola italiana: 1.000,00 -> 1000.00
+                if clean_col.str.contains(',', regex=False).any():
+                    clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+                
+                df[col] = pd.to_numeric(clean_col, errors='coerce').fillna(0)
+            except:
+                pass
+                
+    return df
+
+# --- 3. SIDEBAR ---
+st.sidebar.title("🎯 Control Panel v6")
 files, service = get_drive_files_list()
-df_original = None
+df_processed = None
 
-# A. CARICAMENTO
+# A. SELECT FILE
 if files:
     file_map = {f['name']: f for f in files}
-    sel_file_name = st.sidebar.selectbox("1. Seleziona File Sorgente", list(file_map.keys()))
+    sel_file_name = st.sidebar.selectbox("1. File Sorgente", list(file_map.keys()))
     selected_file_obj = file_map[sel_file_name]
     
-    with st.spinner('Accesso al Database...'):
-        # Usiamo una copia locale per evitare di modificare la cache
-        df_loaded = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
-        if df_loaded is not None:
-            df_original = df_loaded.copy()
+    with st.spinner('Analisi Tipologia Colonne...'):
+        df_raw = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
+        if df_raw is not None:
+            # Pulizia Immediata
+            df_processed = smart_clean_dataframe(df_raw)
 else:
     st.error("Nessun file trovato.")
 
-# B. MAPPATURA (Fondamentale per la logica richiesta)
-col_euro, col_kg, col_data, col_entity, col_customer, col_prod = [None]*6
+# B. MAPPATURA STRICT (Per evitare errori)
+col_entity, col_customer, col_prod, col_euro, col_kg, col_data = [None]*6
 
-if df_original is not None:
-    cols = df_original.columns.tolist()
+if df_processed is not None:
+    st.sidebar.subheader("2. Mappatura Colonne")
     
+    # Dividiamo le colonne per TIPO per non confonderti
+    all_cols = df_processed.columns.tolist()
+    
+    # Colonne Numeriche (Per Euro/Kg)
+    num_cols = df_processed.select_dtypes(include=['number']).columns.tolist()
+    # Colonne Data (Per Periodo)
+    date_cols = df_processed.select_dtypes(include=['datetime']).columns.tolist()
+    # Colonne Testo (Per Cliente/Prodotto) - Escludiamo quelle puramente numeriche o data
+    text_cols = df_processed.select_dtypes(include=['object', 'category']).columns.tolist()
+    
+    # Helper index finder
     def get_idx(keywords, c_list):
         for i, c in enumerate(c_list):
             if any(k in c.lower() for k in keywords): return i
         return 0
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("2. Configurazione Colonne")
-    
-    # Mapping
-    col_entity = st.sidebar.selectbox("Colonna Entità (es. EITA)", cols, index=get_idx(['entity', 'entità', 'company', 'società'], cols))
-    col_customer = st.sidebar.selectbox("Colonna Cliente", cols, index=get_idx(['customer', 'cliente', 'ragione', 'nome'], cols))
-    col_prod = st.sidebar.selectbox("Colonna Prodotto", cols, index=get_idx(['prod', 'desc', 'art', 'item', 'material'], cols))
-    col_euro = st.sidebar.selectbox("Colonna Valore (€)", cols, index=get_idx(['eur', 'valore', 'importo', 'amount', 'totale'], cols))
-    col_kg = st.sidebar.selectbox("Colonna Quantità (Cartoni/Kg)", cols, index=get_idx(['qty', 'qta', 'carton', 'pezzi', 'kg'], cols))
-    col_data = st.sidebar.selectbox("Colonna Data", cols, index=get_idx(['data', 'date', 'doc'], cols))
+    # 1. Campi TESTO
+    with st.sidebar.expander("🅰️ Campi Testo (Chi/Cosa)", expanded=True):
+        if not text_cols: text_cols = all_cols # Fallback
+        
+        col_entity = st.selectbox("Entità (es. EITA)", text_cols, index=get_idx(['entit', 'societ', 'company'], text_cols))
+        col_customer = st.selectbox("Cliente (es. Esselunga)", text_cols, index=get_idx(['ragione', 'soc', 'client', 'destinatario'], text_cols))
+        col_prod = st.selectbox("Prodotto (es. Articolo)", text_cols, index=get_idx(['descr', 'art', 'prod', 'item', 'material'], text_cols))
 
-    # --- FIX CRITICO: PULIZIA NUMERI ITALIANI ---
-    # Questo blocco risolve l'errore ValueError trasformando le colonne "Testo" in "Numeri"
-    try:
-        for col_to_fix in [col_euro, col_kg]:
-            if df_original[col_to_fix].dtype == 'object':
-                # Rimuove € e spazi
-                df_original[col_to_fix] = df_original[col_to_fix].astype(str).str.replace('€', '').str.replace(' ', '')
-                # Se c'è la virgola, assumiamo formato italiano: rimuovi punti migliaia, cambia virgola in punto
-                if df_original[col_to_fix].str.contains(',', regex=False).any():
-                     df_original[col_to_fix] = df_original[col_to_fix].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-                # Converte in numero, mettendo 0 dove non riesce
-                df_original[col_to_fix] = pd.to_numeric(df_original[col_to_fix], errors='coerce').fillna(0)
-    except Exception as e:
-        st.sidebar.error(f"Errore nella conversione numeri: {e}")
-    # --------------------------------------------
+    # 2. Campi NUMERICI
+    with st.sidebar.expander("🔢 Campi Numerici (Quanto)", expanded=True):
+        if not num_cols: 
+            st.warning("Nessuna colonna numerica trovata! Controlla formato Excel.")
+            num_cols = all_cols
+            
+        col_euro = st.selectbox("Valore (€)", num_cols, index=get_idx(['imp', 'netto', 'tot', 'eur', 'amount'], num_cols))
+        col_kg = st.selectbox("Quantità (Kg/Cartoni)", num_cols, index=get_idx(['qta', 'qty', 'carton', 'pezzi', 'kg'], num_cols))
 
-    # C. FILTRI GLOBALI (Gerarchici)
+    # 3. Campi DATA
+    with st.sidebar.expander("📅 Campi Data (Quando)", expanded=True):
+        if not date_cols:
+            st.warning("Nessuna data trovata. Il filtro periodo sarà disabilitato.")
+            col_data = None
+        else:
+            col_data = st.selectbox("Data Riferimento", date_cols, index=get_idx(['data', 'doc', 'date'], date_cols))
+
+    # C. FILTRI LOGICI
     st.sidebar.markdown("---")
-    st.sidebar.subheader("3. Filtri Globali")
+    st.sidebar.subheader("3. Filtri Attivi")
     
-    df_global = df_original.copy()
+    df_global = df_processed.copy()
     
-    # 1. Filtro ENTITÀ (Il vincolo "EITA")
+    # Filtro ENTITÀ
     if col_entity:
-        entities = sorted(df_global[col_entity].astype(str).unique())
-        # Cerchiamo di preselezionare EITA se c'è
-        def_idx = entities.index('EITA') if 'EITA' in entities else 0
-        sel_entity = st.sidebar.selectbox("Filtra Entità", entities, index=def_idx)
-        df_global = df_global[df_global[col_entity].astype(str) == sel_entity]
+        ents = sorted(df_global[col_entity].astype(str).unique())
+        idx_e = ents.index('EITA') if 'EITA' in ents else 0
+        sel_ent = st.sidebar.selectbox("Filtra Entità", ents, index=idx_e)
+        df_global = df_global[df_global[col_entity].astype(str) == sel_ent]
 
-    # 2. Filtro DATA (Finestra Temporale)
+    # Filtro DATA
     if col_data:
         min_d, max_d = df_global[col_data].min(), df_global[col_data].max()
-        if not pd.isnull(min_d):
-            # Default: Ultimi 30 giorni o tutto se piccolo range
-            d_start, d_end = st.sidebar.date_input("Periodo Analisi", [min_d, max_d], min_value=min_d, max_value=max_d)
+        if pd.notnull(min_d):
+            d_start, d_end = st.sidebar.date_input("Periodo", [min_d, max_d], min_value=min_d, max_value=max_d)
             df_global = df_global[(df_global[col_data].dt.date >= d_start) & (df_global[col_data].dt.date <= d_end)]
 
-    # 3. Filtro CLIENTE (Opzionale per restringere il campo globale)
-    customers = sorted(df_global[col_customer].astype(str).unique())
-    sel_customers = st.sidebar.multiselect("Filtra Clienti (Opzionale)", customers)
-    
-    if sel_customers:
-        df_global = df_global[df_global[col_customer].astype(str).isin(sel_customers)]
+    # Filtro CLIENTE OPZIONALE
+    if col_customer:
+        custs = sorted(df_global[col_customer].astype(str).unique())
+        sel_custs = st.sidebar.multiselect("Escludi/Includi Clienti Specifici", custs)
+        if sel_custs:
+            df_global = df_global[df_global[col_customer].astype(str).isin(sel_custs)]
+
 
 # --- 4. DASHBOARD BODY ---
-st.title(f"📊 Report Analitico: {sel_entity if 'sel_entity' in locals() else ''}")
+st.title(f"📊 Report: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
 
-if df_original is not None and not df_global.empty:
+if df_processed is not None and not df_global.empty:
 
-    # --- KPI MACRO ---
+    # KPI
     tot_eur = df_global[col_euro].sum()
     tot_qty = df_global[col_kg].sum()
-    unique_cust = df_global[col_customer].nunique()
+    n_cust = df_global[col_customer].nunique()
     
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Fatturato Totale", f"€ {tot_eur:,.2f}")
-    k2.metric(f"Totale {col_kg}", f"{tot_qty:,.0f}")
-    k3.metric("Clienti Attivi", unique_cust)
-    k4.metric("Ordini/Righe", len(df_global))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Fatturato Periodo", f"€ {tot_eur:,.2f}")
+    c2.metric("Quantità Totale", f"{tot_qty:,.0f}")
+    c3.metric("Clienti Movimentati", n_cust)
+    c4.metric("N. Ordini", len(df_global))
 
     st.markdown("---")
-
-    # --- SEZIONE DEEP DIVE (L'Analisi Richiesta) ---
-    st.subheader("🔍 Analisi Dettaglio Cliente/Prodotto")
     
-    col_left, col_right = st.columns([1, 2])
+    # SEZIONE DRILL DOWN
+    st.subheader("🔍 Spaccato Cliente / Prodotto")
     
-    with col_left:
-        st.info("1. Seleziona un Cliente per 'spaccare' il dato")
-        # Aggreghiamo per cliente per mostrare la lista ordinata per importanza
-        df_cust_summary = df_global.groupby(col_customer)[[col_euro]].sum().sort_values(col_euro, ascending=False)
+    c_left, c_right = st.columns([1, 2])
+    
+    with c_left:
+        st.markdown("#### 1. Scegli Cliente")
+        # Top 50 clienti per fatturato per non intasare la lista
+        top_cust = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(100)
         
-        # Selectbox dinamica ordinata per fatturato
-        if not df_cust_summary.empty:
-            target_customer = st.selectbox(
-                "Scegli Cliente:", 
-                df_cust_summary.index.tolist(),
-                format_func=lambda x: f"{x} (€ {df_cust_summary.loc[x, col_euro]:,.0f})"
-            )
-            
-            # Mini KPI del cliente
-            cust_total = df_cust_summary.loc[target_customer, col_euro]
-            st.metric(f"Totale {target_customer}", f"€ {cust_total:,.2f}")
-            
-            # Grafico Trend Cliente (se ci sono date)
-            df_cust_trend = df_global[df_global[col_customer] == target_customer].groupby(col_data)[col_euro].sum().reset_index()
-            fig_trend = px.bar(df_cust_trend, x=col_data, y=col_euro, title="Andamento Ordini")
-            fig_trend.update_layout(height=250, xaxis_title=None, yaxis_title=None, margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig_trend, use_container_width=True)
-        else:
-            st.warning("Nessun cliente trovato con i filtri attuali.")
-            target_customer = None
+        sel_target_cust = st.selectbox(
+            "Cliente (Ordinati per Fatturato)", 
+            top_cust.index.tolist(),
+            format_func=lambda x: f"{x} (€ {top_cust[x]:,.0f})"
+        )
+        
+        # Mini chart cliente
+        if col_data and sel_target_cust:
+            df_c = df_global[df_global[col_customer] == sel_target_cust]
+            daily = df_c.groupby(col_data)[col_euro].sum().reset_index()
+            st.bar_chart(daily, x=col_data, y=col_euro, color="#004e92", height=200)
 
-    with col_right:
-        if target_customer:
-            st.success(f"2. Dettaglio Prodotti per: **{target_customer}**")
+    with c_right:
+        if sel_target_cust:
+            st.markdown(f"#### 2. Dettaglio: **{sel_target_cust}**")
             
-            # Filtriamo solo per il cliente selezionato
-            df_detail = df_global[df_global[col_customer] == target_customer]
+            df_det = df_global[df_global[col_customer] == sel_target_cust]
             
-            # Raggruppiamo per Prodotto (SOMMA)
-            df_prod_summary = df_detail.groupby(col_prod)[[col_kg, col_euro]].sum().reset_index()
-            df_prod_summary = df_prod_summary.sort_values(col_euro, ascending=False)
+            # Group by Product
+            prod_stats = df_det.groupby(col_prod).agg({
+                col_kg: 'sum',
+                col_euro: 'sum'
+            }).reset_index().sort_values(col_euro, ascending=False)
             
-            # Calcolo % Incidenza
-            total_prod_sum = df_prod_summary[col_euro].sum()
-            if total_prod_sum > 0:
-                df_prod_summary['% Incidenza'] = (df_prod_summary[col_euro] / total_prod_sum * 100).map('{:.1f}%'.format)
-            else:
-                df_prod_summary['% Incidenza'] = "0%"
+            tot_cust_val = prod_stats[col_euro].sum()
+            prod_stats['Incidenza %'] = (prod_stats[col_euro] / tot_cust_val * 100)
             
-            # Formattazione per visualizzazione
             st.dataframe(
-                df_prod_summary,
+                prod_stats,
                 column_config={
-                    col_prod: "Prodotto",
-                    col_kg: st.column_config.NumberColumn("Quantità (Cartoni/Kg)", format="%.0f"),
-                    col_euro: st.column_config.NumberColumn("Valore Totale (€)", format="€ %.2f"),
-                    "% Incidenza": "Impatto %"
+                    col_prod: "Prodotto / Articolo",
+                    col_kg: st.column_config.NumberColumn("Quantità", format="%.0f"),
+                    col_euro: st.column_config.NumberColumn("Valore (€)", format="€ %.2f"),
+                    "Incidenza %": st.column_config.ProgressColumn("Peso %", format="%.1f%%", min_value=0, max_value=100)
                 },
-                use_container_width=True,
                 hide_index=True,
-                height=400
+                use_container_width=True,
+                height=500
             )
 
-    st.markdown("---")
-    
-    # --- MATRICE DI ANALISI GENERALE (CROSS DATA) ---
-    with st.expander("📑 Matrice Completa (Tutti i Clienti nel periodo)", expanded=False):
-        # Pivot Table: Righe=Clienti, Colonne=Metriche
-        pivot_data = df_global.groupby(col_customer)[[col_euro, col_kg]].sum().sort_values(col_euro, ascending=False)
-        st.dataframe(pivot_data.style.format("€ {:,.2f}"), use_container_width=True)
-
-elif df_original is not None:
-    st.warning("Nessun dato trovato con i filtri attuali. Controlla le date o l'Entità.")
+elif df_processed is not None:
+    st.warning("Nessun dato. Controlla che la data non filtri via tutto o che l'Entità esista.")
