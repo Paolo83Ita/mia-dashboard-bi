@@ -7,136 +7,127 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 
 # --- CONFIGURAZIONE DELLA PAGINA ---
-# Imposta il layout largo e il titolo della scheda del browser
 st.set_page_config(
     page_title="Architetto Dashboard Pro",
     page_icon="📊",
     layout="wide"
 )
 
-# --- FUNZIONE DI CONNESSIONE A GOOGLE DRIVE ---
-# Usiamo la cache per non sovraccaricare le API di Google (aggiornamento ogni 10 min)
+# --- FUNZIONE DI CONNESSIONE E LISTA FILE ---
 @st.cache_data(ttl=600)
-def scarica_dati_da_drive():
+def ottieni_lista_file():
     try:
-        # 1. Recupero credenziali dai secrets di Streamlit
         if "google_cloud" not in st.secrets or "folder_id" not in st.secrets:
-            st.error("Configurazione mancante nel file secrets.toml!")
-            return None, None, None
+            return None, "config_missing"
 
-        info_credenziali = st.secrets["google_cloud"]
-        folder_id = st.secrets["folder_id"]
-        
-        # 2. Autenticazione con il Service Account
-        creds = service_account.Credentials.from_service_account_info(info_credenziali)
+        creds = service_account.Credentials.from_service_account_info(st.secrets["google_cloud"])
         service = build('drive', 'v3', credentials=creds)
+        folder_id = st.secrets["folder_id"]
 
-        # 3. Ricerca dell'ultimo file Excel o CSV nella cartella specificata
-        query = f"'{folder_id}' in parents and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'text/csv') and trashed = false"
+        # Cerchiamo tutti i file Excel e CSV nella cartella
+        query = f"'{folder_id}' in parents and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'text/csv' or mimeType = 'application/vnd.ms-excel') and trashed = false"
         risultati = service.files().list(
             q=query, 
-            fields="files(id, name, modifiedTime, mimeType)",
+            fields="files(id, name, modifiedTime, mimeType)", 
             orderBy="modifiedTime desc"
         ).execute()
         
-        elenco_file = risultati.get('files', [])
+        return risultati.get('files', []), service
+    except Exception as e:
+        return str(e), None
 
-        if not elenco_file:
-            st.warning("Nessun file trovato nella cartella Drive.")
-            return None, None, None
-
-        # Prendiamo il file più recente in assoluto
-        file_recente = elenco_file[0]
-        id_file = file_recente['id']
-        nome_file = file_recente['name']
-        data_modifica = file_recente['modifiedTime']
-
-        # 4. Download del file in memoria (senza salvarlo su disco)
-        richiesta = service.files().get_media(fileId=id_file)
+# --- FUNZIONE DOWNLOAD FILE SELEZIONATO ---
+def scarica_file_specifico(service, file_id, nome_file, mime_type):
+    try:
+        request = service.files().get_media(fileId=file_id)
         buffer = io.BytesIO()
-        scaricatore = MediaIoBaseDownload(buffer, richiesta)
+        scaricatore = MediaIoBaseDownload(buffer, request)
         
         completato = False
         while not completato:
             _, completato = scaricatore.next_chunk()
-
         buffer.seek(0)
         
-        # 5. Lettura del file con Pandas
         if nome_file.endswith('.csv'):
-            df = pd.read_csv(buffer)
+            return pd.read_csv(buffer)
         else:
-            df = pd.read_excel(buffer)
-            
-        return df, nome_file, data_modifica
-
+            return pd.read_excel(buffer)
     except Exception as e:
-        st.error(f"Errore durante il caricamento: {str(e)}")
-        return None, None, None
+        st.error(f"Errore nel download del file: {e}")
+        return None
 
 # --- INTERFACCIA UTENTE (UI) ---
-st.title("📊 BI Dashboard: Google Drive Sync")
-st.markdown("Questa dashboard si aggiorna automaticamente con l'ultimo file caricato su Drive.")
+st.title("📊 Cloud BI Dashboard: Analisi Multi-File")
 
-# Sidebar per informazioni e controlli
+# Sidebar: Gestione Connessione e Selezione
 with st.sidebar:
-    st.header("⚙️ Impostazioni")
-    if st.button("🔄 Forza Aggiornamento"):
-        st.cache_data.clear()
-        st.rerun()
-    st.divider()
-    st.caption("Architetto Dashboard Pro v1.0")
+    st.header("⚙️ Sorgente Dati")
+    elenco_file, service = ottieni_lista_file()
 
-# Caricamento effettivo dei dati
-df, nome_file, ultima_mod = scarica_dati_da_drive()
+    if isinstance(elenco_file, list) and elenco_file:
+        opzioni_file = {f['name']: f for f in elenco_file}
+        scelta_nome = st.selectbox("Seleziona il file da analizzare:", list(opzioni_file.keys()))
+        file_selezionato = opzioni_file[scelta_nome]
+        
+        st.divider()
+        if st.button("🔄 Forza Ricaricamento"):
+            st.cache_data.clear()
+            st.rerun()
+    else:
+        st.warning("Nessun file trovato o errore di configurazione.")
+        file_selezionato = None
 
-if df is not None:
-    # Mostra dettagli del file nella sidebar
-    st.sidebar.success(f"Connesso a: {nome_file}")
-    st.sidebar.info(f"Ultima modifica: {ultima_mod}")
+# Caricamento dati del file scelto
+if file_selezionato and service:
+    df = scarica_file_specifico(
+        service, 
+        file_selezionato['id'], 
+        file_selezionato['name'], 
+        file_selezionato['mimeType']
+    )
 
-    # --- KPI E METRICHE ---
-    col1, col2, col3 = st.columns(3)
-    
-    # Identifica colonne numeriche per i calcoli
-    colonne_num = df.select_dtypes(include=['number']).columns.tolist()
-    
-    with col1:
-        st.metric("Totale Righe", len(df))
-    with col2:
+    if df is not None:
+        # --- METRICHE HEADER ---
+        st.sidebar.success(f"Analizzando: {file_selezionato['name']}")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Righe Totali", len(df))
+        
+        colonne_num = df.select_dtypes(include=['number']).columns.tolist()
+        colonne_testo = df.columns.tolist() # Tutte per dare massima libertà
+
         if colonne_num:
-            somma = df[colonne_num[0]].sum()
-            st.metric(f"Somma {colonne_num[0]}", f"{somma:,.0f}")
-    with col3:
-        st.metric("Stato", "Sincronizzato")
+            col2.metric("Media Valori", f"{df[colonne_num[0]].mean():,.2f}")
+        col3.metric("Colonne", len(df.columns))
 
-    st.divider()
+        st.divider()
 
-    # --- VISUALIZZAZIONI ---
-    c1, c2 = st.columns(2)
+        # --- GRAFICI INTERATTIVI ---
+        st.subheader(f"📈 Visualizzazione: {file_selezionato['name']}")
+        c1, c2 = st.columns(2)
 
-    with c1:
-        st.subheader("Distribuzione Dati")
-        # Crea un grafico basato sulle colonne disponibili
-        colonne_testo = df.select_dtypes(include=['object']).columns.tolist()
-        if colonne_testo and colonne_num:
-            fig_pie = px.pie(df, names=colonne_testo[0], values=colonne_num[0], 
-                             hole=0.4, template="plotly_white")
-            st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.info("Dati insufficienti per generare il grafico a torta.")
+        with c1:
+            st.write("### Distribuzione e Proporzioni")
+            if len(colonne_testo) >= 1:
+                cat = st.selectbox("Scegli la categoria (Giri/Nomi/Stati):", colonne_testo, key="cat_sel")
+                val = st.selectbox("Scegli il valore (Numeri):", colonne_num if colonne_num else colonne_testo, key="val_sel")
+                
+                fig_pie = px.pie(df, names=cat, values=val, hole=0.4, 
+                                 template="plotly_white", color_discrete_sequence=px.colors.qualitative.Safe)
+                st.plotly_chart(fig_pie, use_container_width=True)
 
-    with c2:
-        st.subheader("Analisi Trend / Quantità")
-        if colonne_num:
-            fig_hist = px.histogram(df, x=colonne_num[0], nbins=30, 
-                                   template="plotly_dark", color_discrete_sequence=['#636EFA'])
-            st.plotly_chart(fig_hist, use_container_width=True)
+        with c2:
+            st.write("### Confronto e Trend")
+            if colonne_num:
+                x_axis = st.selectbox("Asse Orizzontale (X):", colonne_testo, index=min(1, len(colonne_testo)-1), key="x_axis")
+                y_axis = st.selectbox("Asse Verticale (Y):", colonne_num, key="y_axis")
+                
+                fig_bar = px.bar(df, x=x_axis, y=y_axis, template="plotly_dark", 
+                                 color_discrete_sequence=['#00D4FF'])
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-    # --- TABELLA DATI ---
-    with st.expander("🔍 Esplora i dati grezzi"):
-        st.dataframe(df, use_container_width=True)
-
+        # --- TABELLA DETTAGLIATA ---
+        with st.expander("🔍 Esamina la tabella completa dei dati"):
+            st.dataframe(df, use_container_width=True)
 else:
-    st.warning("In attesa dei dati... Controlla che il file secrets.toml sia configurato correttamente.")
-    st.info("💡 Ricordati di condividere la cartella Drive con l'email del Service Account!")
+    st.info("Seleziona un file dalla barra laterale per iniziare l'analisi.")
