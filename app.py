@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v27) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v29 - Basato su v27) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v28.0",
+    page_title="EITA Analytics Pro v29.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -69,7 +69,6 @@ st.markdown("""
     .kpi-subtitle { font-size: 0.8rem; opacity: 0.6; margin-top: 0.3rem; }
 
     /* --- 3D ENGINE PER GRAFICI PLOTLY --- */
-    /* Crea un'ombra proiettata direttamente dagli elementi SVG del grafico */
     .stPlotlyChart {
         filter: drop-shadow(4px 6px 8px rgba(0,0,0,0.2));
         transition: all 0.3s ease;
@@ -116,7 +115,6 @@ def load_dataset(file_id, modified_time, _service):
             return pd.read_csv(fh)
     except Exception: return None
 
-# DOPPIO MOTORE DI PULIZIA
 def smart_analyze_and_clean(df_in, page_type="Sales"):
     df = df_in.copy()
     
@@ -151,7 +149,7 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
     else:
         target_numeric_cols = ['Quantità prevista', 'Quantità ordinata', 'Importo sconto', 'Sconto promo']
         target_date_cols = ['Sell in da', 'Sell in a', 'Sell out da', 'Sell out a']
-        protected_text_cols = ['Descrizione Cliente', 'Descrizione Prodotto', 'Descrizione Promozione', 'Riferimento', 'Tipo promo', 'Codice prodotto', 'Key Account', 'Decr_Cliente_Fat']
+        protected_text_cols = ['Descrizione Cliente', 'Descrizione Prodotto', 'Descrizione Promozione', 'Riferimento', 'Tipo promo', 'Codice prodotto', 'Key Account', 'Decr_Cliente_Fat', 'Week start']
 
         for col in df.columns:
             if col in ['Numero_Pallet', 'Sovrapponibile', 'COMPANY']: continue
@@ -189,12 +187,13 @@ def guess_column_role(df, page_type="Sales"):
             'customer': ['Decr_Cliente_Fat', 'Descr_Cliente_Fat', 'Descr_Cliente_Dest'], 'product': ['Descr_Articolo']
         }
     else:
-        guesses = {'promo_id': None, 'promo_desc': None, 'customer': None, 'product': None, 'qty_forecast': None, 'qty_actual': None, 'start_date': None, 'status': None, 'division': None, 'type': None}
+        guesses = {'promo_id': None, 'promo_desc': None, 'customer': None, 'product': None, 'qty_forecast': None, 'qty_actual': None, 'start_date': None, 'status': None, 'division': None, 'type': None, 'week_start': None}
         golden_rules = {
             'promo_id': ['Numero Promozione'], 'promo_desc': ['Descrizione Promozione', 'Riferimento'],
             'customer': ['Descrizione Cliente'], 'product': ['Descrizione Prodotto'],
             'qty_forecast': ['Quantità prevista'], 'qty_actual': ['Quantità ordinata'],
-            'start_date': ['Sell in da'], 'status': ['Stato'], 'division': ['Division'], 'type': ['Tipo promo']
+            'start_date': ['Sell in da'], 'status': ['Stato'], 'division': ['Division'], 'type': ['Tipo promo'],
+            'week_start': ['Week start']
         }
 
     for role, targets in golden_rules.items():
@@ -331,7 +330,6 @@ if page == "📊 Vendite & Fatturazione":
                 df_target = df_global if "TUTTI" in sel_target else df_global[df_global[col_customer] == sel_target]
                 
                 if not df_target.empty:
-                    # RITORNO DELLA TORTA E OPZIONI 3D
                     chart_type = st.radio("Rendering Grafico (con Drop-Shadow):", ["📊 Barre 3D", "🥧 Torta 3D", "🍩 Donut 3D"], horizontal=True)
                     prod_agg = df_target.groupby(col_prod).agg({col_euro: 'sum', col_kg: 'sum', col_cartons: 'sum'}).reset_index().sort_values(col_euro, ascending=False).head(10)
                     
@@ -339,57 +337,59 @@ if page == "📊 Vendite & Fatturazione":
                         fig = go.Figure()
                         fig.add_trace(go.Bar(
                             y=prod_agg[col_prod], x=prod_agg[col_euro], orientation='h',
-                            marker=dict(
-                                color=prod_agg[col_euro], 
-                                colorscale='Blues', 
-                                line=dict(color='rgba(0,0,0,0.4)', width=1.5) # Bordo netto per volume
-                            ),
+                            marker=dict(color=prod_agg[col_euro], colorscale='Blues', line=dict(color='rgba(0,0,0,0.4)', width=1.5)),
                             text=prod_agg[col_euro].apply(lambda x: f"€ {x:,.0f}"), textposition='inside', insidetextanchor='middle',
                             hovertemplate="<b>%{y}</b><br>Fatturato: € %{x:,.2f}<extra></extra>"
                         ))
                         fig.update_layout(height=450, yaxis=dict(autorange="reversed", showgrid=False), xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'), margin=dict(l=0,r=0,t=10,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     else:
                         hole_size = 0.45 if "Donut" in chart_type else 0
-                        pull_array = [0.12] + [0] * (len(prod_agg) - 1) # Esplode la fetta principale
+                        pull_array = [0.12] + [0] * (len(prod_agg) - 1)
                         fig = go.Figure(data=[go.Pie(
                             labels=prod_agg[col_prod], values=prod_agg[col_euro], hole=hole_size, pull=pull_array,
-                            marker=dict(colors=px.colors.qualitative.Pastel, line=dict(color='white', width=2.5)), # Bordo bianco per staccare le fette
+                            marker=dict(colors=px.colors.qualitative.Pastel, line=dict(color='white', width=2.5)),
                             textinfo='percent+label', textposition='outside',
                             hovertemplate="<b>%{label}</b><br>Valore: € %{value:,.2f}<br>Quota: %{percent}<extra></extra>"
                         )])
                         fig.update_layout(height=450, margin=dict(l=20,r=20,t=20,b=20), showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     
-                    # Il contenitore ha l'ombra definita nel CSS per l'effetto 3D
                     st.plotly_chart(fig, use_container_width=True)
 
             with col_r:
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto")
-                    st.caption("Seleziona uno o più prodotti per vedere i clienti acquirenti.")
+                    
                     all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
                     
-                    # SOSTITUITO SELECTBOX CON MULTISELECT
+                    # --- V29: SELEZIONE MULTIPLA PRODOTTO ---
                     sel_p = st.multiselect(
-                        "Catalogo Prodotti (Multi-selezione attiva):", 
+                        "Seleziona uno o più Prodotti:", 
                         all_p_sorted.index.tolist(), 
-                        default=[all_p_sorted.index[0]] if len(all_p_sorted) > 0 else None, 
+                        default=[all_p_sorted.index[0]] if len(all_p_sorted) > 0 else None,
                         format_func=lambda x: f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
                     )
                     
                     if sel_p:
                         df_ps = df_target[df_target[col_prod].isin(sel_p)]
-                        # Raggruppiamo per cliente e prodotto per vedere lo spaccato esatto
+                        
+                        # --- V29: SELEZIONE MULTIPLA CLIENTE ---
+                        cust_in_selection = sorted(df_ps[col_customer].dropna().astype(str).unique().tolist())
+                        sel_c = st.multiselect("Filtra per Ragione Sociale Cliente:", cust_in_selection, placeholder="Tutti i clienti del prodotto...")
+                        
+                        if sel_c:
+                            df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
+
                         cb = df_ps.groupby([col_customer, col_prod]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                         st.dataframe(
                             cb, 
                             column_config={
-                                col_customer: st.column_config.TextColumn("👤 Ragione Sociale Cliente", width="large"), 
+                                col_customer: st.column_config.TextColumn("👤 Ragione Sociale", width="medium"), 
                                 col_prod: st.column_config.TextColumn("🏷️ Prodotto", width="medium"),
                                 col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), 
                                 col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), 
                                 col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")
                             }, 
-                            hide_index=True, use_container_width=True, height=500
+                            hide_index=True, use_container_width=True, height=450
                         )
                 else:
                     st.markdown(f"#### 🧾 Dettaglio Acquisti")
@@ -431,6 +431,7 @@ else:
             p_qty_a = st.selectbox("Q.tà Ordinata", all_cols_p, index=set_idx(guesses_p['qty_actual'], all_cols_p))
             p_start = st.selectbox("Data Inizio (Sell in)", all_cols_p, index=set_idx(guesses_p['start_date'], all_cols_p))
             p_type = st.selectbox("Tipo Promo", all_cols_p, index=set_idx(guesses_p['type'], all_cols_p))
+            p_week = st.selectbox("Week start", all_cols_p, index=set_idx(guesses_p['week_start'], all_cols_p))
 
         st.sidebar.markdown("### 🔍 Filtri Promo Rapidi")
         df_pglobal = df_promo_processed.copy()
@@ -505,8 +506,6 @@ else:
                 if p_type in df_pglobal.columns:
                     type_agg = df_pglobal.groupby(p_type).agg({p_qty_f: 'sum', p_qty_a: 'sum'}).reset_index()
                     fig = go.Figure()
-                    
-                    # GRAFICO PROMO CON 3D EFFECT
                     fig.add_trace(go.Bar(
                         x=type_agg[p_type], y=type_agg[p_qty_f], name='Forecast (Previsto)', 
                         marker=dict(color='#89CFF0', line=dict(color='rgba(255,255,255,0.8)', width=1.5))
@@ -515,10 +514,7 @@ else:
                         x=type_agg[p_type], y=type_agg[p_qty_a], name='Actual (Ordinato)', 
                         marker=dict(color='#004e92', line=dict(color='rgba(0,0,0,0.5)', width=1.5))
                     ))
-                    fig.update_layout(
-                        barmode='group', height=450, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', 
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                    )
+                    fig.update_layout(barmode='group', height=450, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                     st.plotly_chart(fig, use_container_width=True)
 
             with col_pr:
@@ -526,8 +522,6 @@ else:
                 promo_desc_col = guesses_p['promo_desc'] or 'Descrizione Promozione'
                 if promo_desc_col in df_pglobal.columns:
                     top_promos = df_pglobal.groupby(promo_desc_col).agg({p_qty_a: 'sum'}).reset_index().sort_values(p_qty_a, ascending=False).head(8)
-                    
-                    # GRAFICO PROMO ORIZZONTALE 3D EFFECT
                     fig = go.Figure(go.Bar(
                         x=top_promos[p_qty_a], y=top_promos[promo_desc_col], orientation='h',
                         marker=dict(color=top_promos[p_qty_a], colorscale='Purp', line=dict(color='rgba(0,0,0,0.4)', width=1.5))
@@ -537,48 +531,41 @@ else:
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
             
-            # NUOVI FILTRI MULTI-SELEZIONE SPECIFICI PER LE COLONNE DELLA TABELLA
-            f_col1, f_col2, f_col3 = st.columns(3)
-            
-            with f_col1:
-                if p_cust in df_pglobal.columns:
-                    cust_list = sorted(df_pglobal[p_cust].dropna().astype(str).unique())
-                    sel_promo_cust = st.multiselect("👤 Filtra Cliente", cust_list, placeholder="Tutti i clienti...")
-                else:
-                    sel_promo_cust = []
-                    
-            with f_col2:
-                if p_prod in df_pglobal.columns:
-                    prod_list = sorted(df_pglobal[p_prod].dropna().astype(str).unique())
-                    sel_promo_prod = st.multiselect("🏷️ Filtra Prodotto", prod_list, placeholder="Tutti i prodotti...")
-                else:
-                    sel_promo_prod = []
-                    
-            with f_col3:
-                promo_desc_col = guesses_p['promo_desc'] or 'Descrizione Promozione'
-                if promo_desc_col in df_pglobal.columns:
-                    desc_list = sorted(df_pglobal[promo_desc_col].dropna().astype(str).unique())
-                    sel_promo_desc = st.multiselect("🎁 Filtra Promozione", desc_list, placeholder="Tutte le promozioni...")
-                else:
-                    sel_promo_desc = []
-
-            # Applicazione dinamica dei filtri sulla tabella
+            # --- V29: PANNELLO DI MULTI-SELEZIONE DINAMICA PER LA TABELLA ---
+            f1, f2, f3, f4 = st.columns(4)
             df_display = df_pglobal.copy()
-            if sel_promo_cust:
-                df_display = df_display[df_display[p_cust].astype(str).isin(sel_promo_cust)]
-            if sel_promo_prod:
-                df_display = df_display[df_display[p_prod].astype(str).isin(sel_promo_prod)]
-            if sel_promo_desc:
-                df_display = df_display[df_display[promo_desc_col].astype(str).isin(sel_promo_desc)]
-
-            cols_to_show = [c for c in [guesses_p['promo_id'], promo_desc_col, p_cust, p_prod, p_start, p_qty_f, p_qty_a, 'Sconto promo'] if c in df_display.columns]
             
-            # Ordinamento sicuro
+            with f1:
+                if p_cust in df_display.columns:
+                    c_list = sorted(df_display[p_cust].dropna().astype(str).unique())
+                    sel_tc = st.multiselect("👤 Cliente", c_list, placeholder="Tutti...")
+                    if sel_tc: df_display = df_display[df_display[p_cust].astype(str).isin(sel_tc)]
+            
+            with f2:
+                if p_prod in df_display.columns:
+                    p_list = sorted(df_display[p_prod].dropna().astype(str).unique())
+                    sel_tp = st.multiselect("🏷️ Prodotto", p_list, placeholder="Tutti...")
+                    if sel_tp: df_display = df_display[df_display[p_prod].astype(str).isin(sel_tp)]
+            
+            with f3:
+                if 'Sconto promo' in df_display.columns:
+                    s_list = sorted(df_display['Sconto promo'].dropna().astype(str).unique())
+                    sel_ts = st.multiselect("📉 Sconto promo", s_list, placeholder="Tutti...")
+                    if sel_ts: df_display = df_display[df_display['Sconto promo'].astype(str).isin(sel_ts)]
+            
+            with f4:
+                if p_week in df_display.columns:
+                    w_list = sorted(df_display[p_week].dropna().astype(str).unique())
+                    sel_tw = st.multiselect("📅 Week start", w_list, placeholder="Tutte...")
+                    if sel_tw: df_display = df_display[df_display[p_week].astype(str).isin(sel_tw)]
+
+            cols_to_show = [c for c in [guesses_p['promo_id'], promo_desc_col, p_cust, p_prod, p_start, p_week, p_qty_f, p_qty_a, 'Sconto promo'] if c in df_display.columns]
+            
             if p_qty_a in df_display.columns:
                 df_display_sorted = df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
             else:
                 df_display_sorted = df_display[cols_to_show]
-                
+
             st.dataframe(
                 df_display_sorted,
                 column_config={
