@@ -9,98 +9,102 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE PREMIUM ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v22",
-    page_icon="✨",
+    page_title="EITA Analytics Pro v23",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS AVANZATO: UI Moderna, Profondità e Mobile Perfetto
+# CSS Custom: Glassmorphism, Responsive Grid perfette, Auto-Theme (Dark/Light compatibile)
 st.markdown("""
 <style>
-    /* Sfondo generale più morbido per esaltare le ombre */
-    .stApp {
-        background-color: #f4f7f6;
-    }
-    
+    /* Rimuove i padding eccessivi di Streamlit per sfruttare tutto lo schermo */
     .block-container {
-        padding-top: 2rem; 
-        padding-bottom: 3rem;
-        max-width: 1400px; /* Contenimento su megaschermi */
-    }
-    
-    /* --- NEXT-GEN KPI CARDS --- */
-    div[data-testid="stMetric"] {
-        background: linear-gradient(145deg, #ffffff, #f0f4f8);
-        border: none;
-        border-left: 6px solid #004e92;
-        padding: 20px 15px;
-        box-shadow: 5px 5px 15px rgba(0, 0, 0, 0.05), -5px -5px 15px rgba(255, 255, 255, 0.8);
-        border-radius: 12px;
-        transition: all 0.3s ease;
-    }
-    
-    div[data-testid="stMetric"]:hover {
-        transform: translateY(-5px);
-        box-shadow: 8px 8px 20px rgba(0, 0, 0, 0.1), -8px -8px 20px rgba(255, 255, 255, 0.9);
-    }
-    
-    [data-testid="stMetricLabel"] {
-        color: #7f8c8d !important; 
-        font-weight: 700;
-        font-size: 0.95rem !important;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    [data-testid="stMetricValue"] {
-        color: #2c3e50 !important; 
-        font-weight: 900;
-        font-size: 1.8rem !important;
-        margin-top: 5px;
-    }
-    
-    /* Titoli Moderni */
-    h1, h2, h3, h4 {
-        font-family: 'Inter', 'Segoe UI', sans-serif; 
-        color: #1a252f !important;
-        font-weight: 800;
-    }
-    
-    /* Tabelle dal look pulito */
-    .stDataFrame {
-        background-color: #ffffff;
-        border-radius: 12px;
-        padding: 15px;
-        box-shadow: 3px 3px 10px rgba(0,0,0,0.03);
+        padding-top: 2rem !important;
+        padding-bottom: 3rem !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
+        max-width: 1600px;
     }
 
-    /* --- RESPONSIVE MOBILE EXTREME --- */
+    /* --- CUSTOM KPI CARDS (CSS GRID) --- */
+    /* Questa griglia impedisce lo sbordamento e si adatta da sola a PC, Tablet e Mobile */
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.2rem;
+        margin-bottom: 2rem;
+    }
+
+    /* Stile Vetro (Glassmorphism) compatibile con Light e Dark Mode */
+    .kpi-card {
+        background: rgba(130, 150, 200, 0.1);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(130, 150, 200, 0.2);
+        border-radius: 16px;
+        padding: 1.5rem;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .kpi-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.1);
+        border: 1px solid rgba(130, 150, 200, 0.4);
+    }
+    
+    /* Decoro laterale moderno */
+    .kpi-card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 100%;
+        width: 6px;
+        background: linear-gradient(180deg, #00c6ff, #0072ff);
+        border-radius: 16px 0 0 16px;
+    }
+
+    .kpi-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        opacity: 0.8; /* Si adatta al testo base di Streamlit */
+        margin-bottom: 0.5rem;
+    }
+
+    .kpi-value {
+        font-size: 2rem;
+        font-weight: 800;
+        line-height: 1.2;
+    }
+    
+    .kpi-subtitle {
+        font-size: 0.8rem;
+        opacity: 0.6;
+        margin-top: 0.3rem;
+    }
+
+    /* Ottimizzazione UI Mobile Generale */
     @media (max-width: 768px) {
         .block-container {
-            padding-top: 1rem;
-            padding-left: 0.8rem; 
-            padding-right: 0.8rem;
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+            padding-top: 1rem !important;
         }
-        h1 { font-size: 1.6rem !important; }
-        h3 { font-size: 1.3rem !important; }
-        
-        div[data-testid="stMetric"] {
-            margin-bottom: 12px;
-            padding: 15px 10px;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.5rem !important;
-        }
-        [data-testid="stMetricLabel"] {
-            font-size: 0.8rem !important;
-        }
+        .kpi-grid { gap: 0.8rem; }
+        .kpi-value { font-size: 1.6rem; }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. MOTORE DATI (Intatto dalla v21) ---
+# --- 2. MOTORE DATI (STABILE DALLA v16) ---
 @st.cache_data(ttl=300)
 def get_drive_files_list():
     try:
@@ -111,10 +115,7 @@ def get_drive_files_list():
         folder_id = st.secrets["folder_id"]
         
         query = f"'{folder_id}' in parents and (mimeType contains 'spreadsheet' or mimeType contains 'csv' or name contains '.xlsx') and trashed = false"
-        results = service.files().list(
-            q=query, fields="files(id, name, modifiedTime, size)", 
-            orderBy="modifiedTime desc", pageSize=50
-        ).execute()
+        results = service.files().list(q=query, fields="files(id, name, modifiedTime, size)", orderBy="modifiedTime desc", pageSize=50).execute()
         return results.get('files', []), service
     except Exception as e:
         return None, str(e)
@@ -126,11 +127,9 @@ def load_dataset(file_id, modified_time, _service):
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
-        while not done:
-            _, done = downloader.next_chunk()
+        while not done: _, done = downloader.next_chunk()
         fh.seek(0)
-        try:
-            df = pd.read_excel(fh)
+        try: df = pd.read_excel(fh)
         except:
             fh.seek(0)
             df = pd.read_csv(fh)
@@ -141,7 +140,6 @@ def load_dataset(file_id, modified_time, _service):
 def smart_analyze_and_clean(df_in):
     df = df_in.copy()
     target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto']
-    
     for col in df.columns:
         if col in ['Numero_Pallet', 'Sovrapponibile']: continue 
         sample = df[col].dropna().astype(str).head(100).tolist()
@@ -186,7 +184,7 @@ def guess_column_role(df):
     return guesses
 
 # --- 3. SIDEBAR ---
-st.sidebar.title("✨ Control Panel")
+st.sidebar.title("🚀 EITA Dashboard")
 files, service = get_drive_files_list()
 df_processed = None
 
@@ -203,7 +201,7 @@ if files:
     sel_file_name = st.sidebar.selectbox("1. Sorgente Dati", file_list, index=default_index)
     selected_file_obj = file_map[sel_file_name]
     
-    with st.spinner('Sincronizzazione Cloud...'):
+    with st.spinner('Analisi e Ottimizzazione Modello Dati...'):
         df_raw = load_dataset(selected_file_obj['id'], selected_file_obj['modifiedTime'], service)
         if df_raw is not None:
             df_processed = smart_analyze_and_clean(df_raw)
@@ -214,7 +212,7 @@ if df_processed is not None:
     guesses = guess_column_role(df_processed)
     all_cols = df_processed.columns.tolist()
 
-    with st.sidebar.expander("2. Mappatura Colonne", expanded=False):
+    with st.sidebar.expander("⚙️ Mappatura Colonne", expanded=False):
         def set_idx(guess, options): return options.index(guess) if guess in options else 0
         col_entity = st.selectbox("Entità", all_cols, index=set_idx(guesses['entity'], all_cols))
         col_customer = st.selectbox("Cliente (Fatturazione)", all_cols, index=set_idx(guesses['customer'], all_cols))
@@ -224,119 +222,152 @@ if df_processed is not None:
         col_cartons = st.selectbox("Cartoni (Qty)", all_cols, index=set_idx(guesses['cartons'], all_cols))
         col_data = st.selectbox("Data Riferimento", all_cols, index=set_idx(guesses['date'], all_cols))
 
-    st.sidebar.subheader("3. Filtri Base")
+    st.sidebar.markdown("### 🔍 Filtri Rapidi")
     df_global = df_processed.copy()
     
     if col_entity:
         ents = sorted(df_global[col_entity].astype(str).unique())
         idx_e = ents.index('EITA') if 'EITA' in ents else 0
-        sel_ent = st.sidebar.selectbox("Filtra Entità", ents, index=idx_e)
+        sel_ent = st.sidebar.selectbox("Società / Entità", ents, index=idx_e)
         df_global = df_global[df_global[col_entity].astype(str) == sel_ent]
 
     if col_data:
         def_start, def_end = datetime.date(2026, 1, 1), datetime.date(2026, 1, 31)
-        d_start, d_end = st.sidebar.date_input("Periodo Analisi", [def_start, def_end], format="DD/MM/YYYY")
+        d_start, d_end = st.sidebar.date_input("Periodo di Analisi", [def_start, def_end], format="DD/MM/YYYY")
         df_global = df_global[(df_global[col_data].dt.date >= d_start) & (df_global[col_data].dt.date <= d_end)]
 
-    st.sidebar.subheader("4. Filtri Avanzati")
+    st.sidebar.markdown("### 🎛️ Filtri Avanzati")
     possible_filters = [c for c in all_cols if c not in [col_euro, col_kg, col_cartons, col_data, col_entity]]
-    filters_selected = st.sidebar.multiselect("Aggiungi Filtri Extra:", possible_filters)
+    filters_selected = st.sidebar.multiselect("Aggiungi filtri (es. Vettore, Regione):", possible_filters)
     for f_col in filters_selected:
         unique_vals = sorted(df_global[f_col].astype(str).unique())
-        sel_vals = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals)
+        sel_vals = st.sidebar.multiselect(f"Seleziona in {f_col}", unique_vals)
         if sel_vals:
             df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
 
 # --- 4. DASHBOARD BODY ---
-st.title(f"📊 Report Executive: {sel_ent if 'sel_ent' in locals() else 'Generale'}")
+st.title(f"Performance Overview: {sel_ent if 'sel_ent' in locals() else 'Global'}")
 
 if df_processed is not None and not df_global.empty:
-    # --- KPI MACRO ---
+    
+    # --- CALCOLI KPI ---
     tot_euro = df_global[col_euro].sum()
     tot_kg = df_global[col_kg].sum()
-    
     col_ord_num = next((c for c in df_global.columns if "Numero_Ordine" in c), None)
     tot_orders = df_global[col_ord_num].nunique() if col_ord_num else len(df_global)
     
     top_c_data = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False).head(1)
     top_name = top_c_data.index[0] if not top_c_data.empty else "-"
     top_val = top_c_data.values[0] if not top_c_data.empty else 0
-    
-    # Layout responsivo per i KPI
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("Fatturato Totale", f"€ {tot_euro:,.2f}")
-    with c2: st.metric("Quantità Totale", f"{tot_kg:,.0f} Kg")
-    with c3: st.metric("N° Ordini", f"{tot_orders:,}")
-    with c4: st.metric("Top Cliente", top_name[:15]+".." if len(str(top_name))>15 else top_name, f"€ {top_val:,.0f}")
+    short_top_name = top_name[:20]+".." if len(str(top_name))>20 else str(top_name)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    # --- INIEZIONE CUSTOM HTML KPI (Perfetto per ogni tema e schermo) ---
+    kpi_html = f"""
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-title">💰 Fatturato Netto</div>
+            <div class="kpi-value">€ {tot_euro:,.0f}</div>
+            <div class="kpi-subtitle">Totale nel periodo selezionato</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">⚖️ Volume Totale</div>
+            <div class="kpi-value">{tot_kg:,.0f} Kg</div>
+            <div class="kpi-subtitle">Peso netto cumulato</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">📦 Ordini Elaborati</div>
+            <div class="kpi-value">{tot_orders:,}</div>
+            <div class="kpi-subtitle">Transazioni uniche / Righe</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">👑 Top Customer</div>
+            <div class="kpi-value">{short_top_name}</div>
+            <div class="kpi-subtitle">Valore: € {top_val:,.0f}</div>
+        </div>
+    </div>
+    """
+    st.markdown(kpi_html, unsafe_allow_html=True)
     
-    # --- DRILL DOWN ---
-    st.subheader("🔍 Analisi Dinamica Cliente/Prodotto")
+    # --- SEZIONE GRAFICI E DETTAGLI ---
+    st.markdown("### 🧭 Analisi Esplorativa (Drill-Down)")
     
-    col_l, col_r = st.columns([1, 1.8])
+    col_l, col_r = st.columns([1.2, 1.8], gap="large")
     
     cust_totals = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
     total_val_period = df_global[col_euro].sum()
-    options = ["TUTTI I CLIENTI"] + cust_totals.index.tolist()
+    options = ["🌍 TUTTI I CLIENTI"] + cust_totals.index.tolist()
     
     with col_l:
-        st.info("💡 Seleziona o digita per filtrare l'analisi")
         sel_target = st.selectbox(
-            "Target Analisi (Ord. per Fatturato):", 
+            "📍 Focus Analisi:", 
             options,
-            format_func=lambda x: f"{x} (€ {total_val_period:,.0f})" if x == "TUTTI I CLIENTI" else f"{x} (€ {cust_totals[x]:,.0f})"
+            format_func=lambda x: f"{x} (Fatturato: € {total_val_period:,.0f})" if "TUTTI" in x else f"{x} (€ {cust_totals[x]:,.0f})"
         )
         
-        df_target = df_global if sel_target == "TUTTI I CLIENTI" else df_global[df_global[col_customer] == sel_target]
+        df_target = df_global if "TUTTI" in sel_target else df_global[df_global[col_customer] == sel_target]
         
         if not df_target.empty:
-            chart_type = st.radio("Seleziona Stile Grafico:", ["Barre 3D", "Torta 3D", "Donut"], horizontal=True)
+            chart_type = st.radio("Seleziona Rendering Grafico:", ["📊 Barre 3D", "🍩 Donut Dinamico"], horizontal=True)
             
             prod_agg = df_target.groupby(col_prod).agg({col_euro: 'sum', col_kg: 'sum', col_cartons: 'sum'}).reset_index().sort_values(col_euro, ascending=False).head(10)
             
-            # --- CREAZIONE GRAFICI AVANZATI (3D FEEL) ---
-            if chart_type == "Barre 3D":
-                fig = px.bar(
-                    prod_agg, x=col_euro, y=col_prod, orientation='h', 
-                    text_auto='.2s', color=col_euro, color_continuous_scale='Blues' # Gradiente di colore
-                )
+            if chart_type == "📊 Barre 3D":
+                # GRAFICO A BARRE CUSTOM 3D EFFECT
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    y=prod_agg[col_prod],
+                    x=prod_agg[col_euro],
+                    orientation='h',
+                    marker=dict(
+                        color=prod_agg[col_euro],
+                        colorscale='Blues',
+                        line=dict(color='rgba(255, 255, 255, 0.5)', width=2) # Effetto luce sui bordi
+                    ),
+                    text=prod_agg[col_euro].apply(lambda x: f"€ {x:,.0f}"),
+                    textposition='inside',
+                    insidetextanchor='middle',
+                    hovertemplate="<b>%{y}</b><br>Fatturato: € %{x:,.2f}<extra></extra>"
+                ))
                 fig.update_layout(
-                    height=450, yaxis=dict(autorange="reversed"), 
-                    margin=dict(l=0,r=10,t=10,b=10), xaxis_title=None, yaxis_title=None,
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                    coloraxis_showscale=False # Nasconde la barra colore laterale
+                    height=500,
+                    yaxis=dict(autorange="reversed", showgrid=False),
+                    xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
+                    margin=dict(l=0,r=0,t=10,b=10),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=12)
                 )
-                # Bordi neri per simulare profondità 3D
-                fig.update_traces(marker_line_color='rgba(0,0,0,0.3)', marker_line_width=1.5)
             
             else:
-                hole_size = 0.5 if chart_type == "Donut" else 0
-                fig = px.pie(
-                    prod_agg, values=col_euro, names=col_prod, hole=hole_size,
-                    color_discrete_sequence=px.colors.qualitative.Prism # Colori premium
-                )
-                
-                # Calcola l'esplosione (pull) solo per il primo elemento (il più grande)
-                pull_array = [0.15] + [0] * (len(prod_agg) - 1)
-                
-                fig.update_traces(
-                    textposition='outside', textinfo='percent+label', textfont_size=12,
-                    pull=pull_array, # Crea l'effetto 3D "esploso"
-                    marker=dict(line=dict(color='#ffffff', width=2)) # Bordi bianchi per stacco netto
-                )
+                # GRAFICO DONUT 3D EFFECT
+                pull_array = [0.08] + [0] * (len(prod_agg) - 1) # Esplode solo il primo
+                fig = go.Figure(data=[go.Pie(
+                    labels=prod_agg[col_prod],
+                    values=prod_agg[col_euro],
+                    hole=0.45,
+                    pull=pull_array,
+                    marker=dict(
+                        colors=px.colors.qualitative.Pastel,
+                        line=dict(color='rgba(255, 255, 255, 0.8)', width=3) # Bordo netto per profondità
+                    ),
+                    textinfo='percent+label',
+                    textposition='outside',
+                    hovertemplate="<b>%{label}</b><br>Valore: € %{value:,.2f}<br>Quota: %{percent}<extra></extra>"
+                )])
                 fig.update_layout(
-                    height=450, margin=dict(l=20,r=20,t=30,b=10), showlegend=False,
+                    height=500,
+                    margin=dict(l=20,r=20,t=20,b=20),
+                    showlegend=False,
                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
                 )
             
             st.plotly_chart(fig, use_container_width=True)
 
     with col_r:
-        if sel_target == "TUTTI I CLIENTI":
+        if "TUTTI" in sel_target:
             st.markdown("#### 💥 Esplosione Prodotto")
+            st.caption("Seleziona un prodotto per vedere quali clienti lo acquistano.")
             all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
-            sel_p = st.selectbox("Su quale prodotto vuoi fare lo spaccato Clienti?", all_p_sorted.index.tolist(), format_func=lambda x: f"{x} (Fatturato: € {all_p_sorted[x]:,.0f})")
+            sel_p = st.selectbox("Catalogo Prodotti (Top Selling in cima):", all_p_sorted.index.tolist(), format_func=lambda x: f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})")
             
             if sel_p:
                 df_ps = df_target[df_target[col_prod] == sel_p]
@@ -344,26 +375,27 @@ if df_processed is not None and not df_global.empty:
                 st.dataframe(
                     cb, 
                     column_config={
-                        col_customer: "Ragione Sociale (Fatturazione)",
-                        col_cartons: st.column_config.NumberColumn("Cart.", format="%d"),
-                        col_kg: st.column_config.NumberColumn("Kg Tot.", format="%d"),
-                        col_euro: st.column_config.NumberColumn("Valore", format="€ %.2f")
+                        col_customer: st.column_config.TextColumn("👤 Ragione Sociale Cliente", width="large"),
+                        col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"),
+                        col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"),
+                        col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")
                     }, 
                     hide_index=True, use_container_width=True, height=520
                 )
         else:
-            st.markdown(f"#### Portafoglio Acquisti: **{sel_target}**")
+            st.markdown(f"#### 🧾 Dettaglio Acquisti")
+            st.caption(f"Portafoglio ordini per: {sel_target}")
             ps = df_target.groupby(col_prod).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
             st.dataframe(
                 ps, 
                 column_config={
-                    col_prod: "Articolo / Descrizione",
-                    col_cartons: st.column_config.NumberColumn("Cartoni", format="%d"),
-                    col_kg: st.column_config.NumberColumn("Kg Tot.", format="%d"),
-                    col_euro: st.column_config.NumberColumn("Valore", format="€ %.2f")
+                    col_prod: st.column_config.TextColumn("🏷️ Articolo / Prodotto", width="large"),
+                    col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"),
+                    col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"),
+                    col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")
                 }, 
                 hide_index=True, use_container_width=True, height=520
             )
 
 elif df_processed is not None:
-    st.warning("Nessun dato trovato per il periodo/filtri selezionati.")
+    st.info("Nessun dato trovato. Modifica i filtri o il periodo selezionato.")
