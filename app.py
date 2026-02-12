@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v34.0) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v34.2) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v34.0",
+    page_title="EITA Analytics Pro v34.2",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -416,7 +416,18 @@ if page == "📊 Vendite & Fatturazione":
                             
                             st.markdown(f"⬇️ **Livello 2: Dettaglio per '{selected_val}'**")
                             
-                            detail_df = df_tree_raw[df_tree_raw[primary_col] == selected_val]
+                            # FIX ULTRA-ROBUSTO V34.2: Normalizzazione Totale
+                            def normalize_val(v):
+                                s = str(v).strip()
+                                if s.endswith('.0'): s = s[:-2]
+                                return s
+
+                            col_normalized = df_tree_raw[primary_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                            val_normalized = normalize_val(selected_val)
+                            
+                            mask = col_normalized == val_normalized
+                            detail_df = df_tree_raw[mask]
+                            
                             detail_agg = detail_df.groupby(secondary_col).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                             
                             detail_agg['Valore Medio €/Kg'] = np.where(detail_agg[col_kg] > 0, detail_agg[col_euro] / detail_agg[col_kg], 0)
