@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE EXTREME ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v26.1",
+    page_title="EITA Analytics Pro v26.2",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -513,4 +513,3 @@ else:
 
         else:
             st.warning("Nessuna promozione trovata per i filtri selezionati.")```
-
