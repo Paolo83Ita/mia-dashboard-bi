@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (v37.0 - Promo Analysis & Stability) ---
+# --- 1. CONFIGURAZIONE & STILE (v37.1 - Entity Filter in Promo Chart) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v37.0",
+    page_title="EITA Analytics Pro v37.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -362,7 +362,7 @@ if page == "📊 Vendite & Fatturazione":
             filters_selected = st.multiselect("Aggiungi filtri (es. Vettore, Regione):", possible_filters)
             active_filters = {}
             for f_col in filters_selected:
-                unique_vals = sorted(df_processed[f_col].astype(str).unique()) # Use df_processed to populate list
+                unique_vals = sorted(df_processed[f_col].astype(str).unique())
                 sel_vals = st.multiselect(f"Seleziona in {f_col}", unique_vals)
                 if sel_vals:
                     active_filters[f_col] = sel_vals
@@ -826,11 +826,18 @@ elif page == "🎁 Analisi Customer Promo":
                     col_ct_s = 'Qta_Cartoni_Ordinato'
                     col_art = 'Descr_Articolo'
                     col_cli = 'Decr_Cliente_Fat'
+                    col_ent = 'Entity'
                     
                     if all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
                         # Filters for this chart
                         with st.form("promo_sales_chart_filter"):
                             st.caption("Filtra Dati Vendite per Grafico Promo")
+                            
+                            # Entity Filter Logic
+                            all_ents = sorted(df_s[col_ent].dropna().astype(str).unique()) if col_ent in df_s.columns else []
+                            default_ent = ['EITA'] if 'EITA' in all_ents else []
+                            sel_ent_chart = st.multiselect("Filtra Entità", all_ents, default=default_ent)
+
                             all_prods = sorted(df_s[col_art].dropna().astype(str).unique())
                             all_custs = sorted(df_s[col_cli].dropna().astype(str).unique())
                             
@@ -839,9 +846,14 @@ elif page == "🎁 Analisi Customer Promo":
                             
                             apply_chart_filters = st.form_submit_button("Aggiorna Grafico")
                         
-                        if apply_chart_filters:
-                            if sel_prod_chart: df_s = df_s[df_s[col_art].astype(str).isin(sel_prod_chart)]
-                            if sel_cust_chart: df_s = df_s[df_s[col_cli].astype(str).isin(sel_cust_chart)]
+                        # Apply Filters (use variables directly to support default load)
+                        if sel_ent_chart and col_ent in df_s.columns:
+                             df_s = df_s[df_s[col_ent].astype(str).isin(sel_ent_chart)]
+                        
+                        if sel_prod_chart: 
+                             df_s = df_s[df_s[col_art].astype(str).isin(sel_prod_chart)]
+                        if sel_cust_chart: 
+                             df_s = df_s[df_s[col_cli].astype(str).isin(sel_cust_chart)]
                         
                         # Logic: Promo if S7 != 0 or S4 != 0
                         df_s['Tipo Vendita'] = np.where(
