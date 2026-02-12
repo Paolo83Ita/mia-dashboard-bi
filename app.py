@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v31.1) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v31.2) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v31.1",
+    page_title="EITA Analytics Pro v31.2",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -27,6 +27,12 @@ st.markdown("""
         padding-right: 1.5rem !important;
         max-width: 1600px;
     }
+    
+    /* NASCONDE LA TOOLBAR NATIVA DI STREAMLIT (Quella che scarica CSV) */
+    [data-testid="stElementToolbar"] {
+        display: none;
+    }
+
     .kpi-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -101,11 +107,10 @@ def load_dataset(file_id, modified_time, _service):
             return pd.read_csv(fh)
     except Exception: return None
 
-# GENERATORE EXCEL PROFESSIONALE (Con Fallback di Sicurezza)
+# GENERATORE EXCEL PROFESSIONALE (Con Fallback e Formattazione Rigorosa)
 def convert_df_to_excel(df):
     output = io.BytesIO()
     try:
-        # Tenta di usare XlsxWriter per la formattazione avanzata
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='Dati')
             workbook = writer.book
@@ -113,6 +118,7 @@ def convert_df_to_excel(df):
             
             # Formati
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#f0f0f0', 'border': 1, 'text_wrap': True, 'valign': 'vcenter'})
+            # Formato numeri: 4 decimali come richiesto
             num_fmt = workbook.add_format({'num_format': '#,##0.0000'})
             
             # Applica formato intestazione
@@ -121,17 +127,19 @@ def convert_df_to_excel(df):
                 
             # Imposta larghezza colonne e formato numeri
             for i, col in enumerate(df.columns):
+                # Calcolo larghezza: Lunghezza max del contenuto + 5 caratteri di margine
                 max_len = max(
                     df[col].astype(str).map(len).max() if not df[col].empty else 0,
                     len(str(col))
                 )
-                final_len = min(max_len + 2, 50)
+                final_len = min(max_len + 5, 60) # Aumentato margine e limite max
+                
                 if pd.api.types.is_numeric_dtype(df[col]):
                     worksheet.set_column(i, i, final_len, num_fmt)
                 else:
                     worksheet.set_column(i, i, final_len)
     except ModuleNotFoundError:
-        # Fallback se xlsxwriter non è installato
+        # Fallback nel caso manchi la libreria (ma requirements.txt dovrebbe prevenire questo)
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
              df.to_excel(writer, index=False, sheet_name='Dati')
              
@@ -354,11 +362,9 @@ if page == "📊 Vendite & Fatturazione":
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto")
                     
-                    # FORM STABILE + GESTIONE GERARCHIA (Pivot)
                     with st.form("product_explosion_form"):
                         st.caption("Configura la vista e premi 'Aggiorna Analisi'.")
                         
-                        # Opzioni Raggruppamento (Fix Richiesta 'Portare su la colonna')
                         group_mode = st.radio("Gerarchia Raggruppamento:", ["Prodotto → Cliente", "Cliente → Prodotto"], horizontal=True)
 
                         all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
@@ -377,40 +383,31 @@ if page == "📊 Vendite & Fatturazione":
                         
                         submit_btn = st.form_submit_button("🔄 Aggiorna Analisi")
 
-                    # ELABORAZIONE
                     if submit_btn:
                         df_ps = df_target.copy()
-                        
-                        # Filtro Prodotti
                         if "TUTTI I PRODOTTI" not in sel_p:
                             df_ps = df_ps[df_ps[col_prod].isin(sel_p)]
-                        
-                        # Filtro Clienti
                         if sel_c:
                             df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
 
-                        # Logica Pivot Dinamica
+                        # Logica Pivot
                         if group_mode == "Prodotto → Cliente":
-                            primary_col, secondary_col = col_prod, col_customer
+                            primary, secondary = col_prod, col_customer
                             col_order_display = [col_prod, col_customer, col_cartons, col_kg, col_euro, 'Valore Medio €/Kg', 'Valore Medio €/CT']
                         else:
-                            primary_col, secondary_col = col_customer, col_prod
+                            primary, secondary = col_customer, col_prod
                             col_order_display = [col_customer, col_prod, col_cartons, col_kg, col_euro, 'Valore Medio €/Kg', 'Valore Medio €/CT']
 
-                        # Aggregazione
-                        cb = df_ps.groupby([primary_col, secondary_col]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
-                        
-                        # Calcolo Prezzi Medi
+                        # Aggregazione e Calcolo
+                        cb = df_ps.groupby([primary, secondary]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                         cb['Valore Medio €/Kg'] = np.where(cb[col_kg] > 0, cb[col_euro] / cb[col_kg], 0)
                         cb['Valore Medio €/CT'] = np.where(cb[col_cartons] > 0, cb[col_euro] / cb[col_cartons], 0)
                         
-                        # Salva in sessione con ordinamento colonne corretto
                         st.session_state['sales_explosion_df'] = cb[col_order_display]
 
                     if 'sales_explosion_df' in st.session_state:
                         df_show = st.session_state['sales_explosion_df']
                         
-                        # Visualizzazione Tabella
                         st.dataframe(
                             df_show, 
                             column_config={
@@ -425,10 +422,10 @@ if page == "📊 Vendite & Fatturazione":
                             hide_index=True, use_container_width=True, height=500
                         )
                         
-                        # DOWNLOAD BUTTON EXCEL (Gestito con fallback)
+                        # PULSANTE DOWNLOAD EXCEL
                         excel_data = convert_df_to_excel(df_show)
                         st.download_button(
-                            label="📥 Scarica Report Excel",
+                            label="📥 Scarica Report Excel (.xlsx)",
                             data=excel_data,
                             file_name=f"Explosion_Report_{datetime.date.today()}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -441,7 +438,7 @@ if page == "📊 Vendite & Fatturazione":
                     
                     excel_data_single = convert_df_to_excel(ps)
                     st.download_button(
-                        label="📥 Scarica Dettaglio Excel",
+                        label="📥 Scarica Dettaglio Excel (.xlsx)",
                         data=excel_data_single,
                         file_name=f"Dettaglio_{sel_target}_{datetime.date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -633,7 +630,7 @@ elif page == "🎁 Analisi Customer Promo":
                 
                 excel_data_promo = convert_df_to_excel(df_p_show)
                 st.download_button(
-                    label="📥 Scarica Report Promo Excel",
+                    label="📥 Scarica Report Promo Excel (.xlsx)",
                     data=excel_data_promo,
                     file_name=f"Promo_Report_{datetime.date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
