@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v29 - Basato su v27) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v29.1) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v29.0",
+    page_title="EITA Analytics Pro v29.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -360,19 +360,24 @@ if page == "📊 Vendite & Fatturazione":
                     st.markdown("#### 💥 Esplosione Prodotto")
                     
                     all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
+                    tot_euro_target = df_target[col_euro].sum()
+                    prod_options = ["TUTTI I PRODOTTI"] + all_p_sorted.index.tolist()
                     
-                    # --- V29: SELEZIONE MULTIPLA PRODOTTO ---
+                    # --- SELEZIONE MULTIPLA PRODOTTO CON "TUTTI" ---
                     sel_p = st.multiselect(
                         "Seleziona uno o più Prodotti:", 
-                        all_p_sorted.index.tolist(), 
-                        default=[all_p_sorted.index[0]] if len(all_p_sorted) > 0 else None,
-                        format_func=lambda x: f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
+                        prod_options, 
+                        default=["TUTTI I PRODOTTI"],
+                        format_func=lambda x: f"{x} (Incasso Tot: € {tot_euro_target:,.0f})" if x == "TUTTI I PRODOTTI" else f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
                     )
                     
                     if sel_p:
-                        df_ps = df_target[df_target[col_prod].isin(sel_p)]
+                        if "TUTTI I PRODOTTI" in sel_p:
+                            df_ps = df_target
+                        else:
+                            df_ps = df_target[df_target[col_prod].isin(sel_p)]
                         
-                        # --- V29: SELEZIONE MULTIPLA CLIENTE ---
+                        # --- SELEZIONE MULTIPLA CLIENTE ---
                         cust_in_selection = sorted(df_ps[col_customer].dropna().astype(str).unique().tolist())
                         sel_c = st.multiselect("Filtra per Ragione Sociale Cliente:", cust_in_selection, placeholder="Tutti i clienti del prodotto...")
                         
