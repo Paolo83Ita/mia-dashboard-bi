@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (v36.0 - FIXED) ---
+# --- 1. CONFIGURAZIONE & STILE (v36.1 - Added Metrics to Detail) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v36.0",
+    page_title="EITA Analytics Pro v36.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -636,6 +636,15 @@ if page == "📊 Vendite & Fatturazione":
                         .reset_index()
                         .sort_values(col_euro, ascending=False)
                     )
+                    # --- ADDED METRICS HERE (v36.1) ---
+                    ps['Valore Medio €/Kg'] = np.where(
+                        ps[col_kg] > 0, ps[col_euro] / ps[col_kg], 0
+                    )
+                    ps['Valore Medio €/CT'] = np.where(
+                        ps[col_cartons] > 0, ps[col_euro] / ps[col_cartons], 0
+                    )
+                    # ----------------------------------
+
                     st.dataframe(
                         ps,
                         column_config={
@@ -643,6 +652,8 @@ if page == "📊 Vendite & Fatturazione":
                             col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"),
                             col_kg:      st.column_config.NumberColumn("⚖️ Kg", format="%d"),
                             col_euro:    st.column_config.NumberColumn("💰 Valore", format="€ %.2f"),
+                            'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
+                            'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
                         },
                         hide_index=True, use_container_width=True, height=500
                     )
