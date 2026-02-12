@@ -513,3 +513,4 @@ else:
 
         else:
             st.warning("Nessuna promozione trovata per i filtri selezionati.")```
+
