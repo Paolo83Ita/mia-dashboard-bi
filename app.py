@@ -9,15 +9,15 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v30.1) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v31.0) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v30.1",
+    page_title="EITA Analytics Pro v31.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS Custom: Glassmorphism, 3D Shadows, Auto-Theme & Mobile Perfection
+# CSS Custom
 st.markdown("""
 <style>
     .block-container {
@@ -27,15 +27,12 @@ st.markdown("""
         padding-right: 1.5rem !important;
         max-width: 1600px;
     }
-
-    /* --- CUSTOM KPI CARDS (CSS GRID) --- */
     .kpi-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 1.2rem;
         margin-bottom: 2rem;
     }
-
     .kpi-card {
         background: rgba(130, 150, 200, 0.1);
         backdrop-filter: blur(10px);
@@ -48,40 +45,25 @@ st.markdown("""
         position: relative;
         overflow: hidden;
     }
-    
     .kpi-card:hover {
         transform: translateY(-5px);
         box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.15);
         border: 1px solid rgba(130, 150, 200, 0.4);
     }
-    
     .kpi-card::before {
         content: ""; position: absolute; left: 0; top: 0; height: 100%; width: 6px;
         background: linear-gradient(180deg, #00c6ff, #0072ff); border-radius: 16px 0 0 16px;
     }
-
-    .kpi-card.promo-card::before {
-        background: linear-gradient(180deg, #ff9a9e, #fecfef);
-    }
+    .kpi-card.promo-card::before { background: linear-gradient(180deg, #ff9a9e, #fecfef); }
+    .kpi-card.purch-card::before { background: linear-gradient(180deg, #43e97b, #38f9d7); }
     
-    .kpi-card.purch-card::before {
-        background: linear-gradient(180deg, #43e97b, #38f9d7);
-    }
-
     .kpi-title { font-size: 0.9rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; opacity: 0.8; margin-bottom: 0.5rem; }
     .kpi-value { font-size: 2rem; font-weight: 800; line-height: 1.2; }
     .kpi-subtitle { font-size: 0.8rem; opacity: 0.6; margin-top: 0.3rem; }
 
-    /* --- 3D ENGINE PER GRAFICI PLOTLY --- */
-    .stPlotlyChart {
-        filter: drop-shadow(4px 6px 8px rgba(0,0,0,0.2));
-        transition: all 0.3s ease;
-    }
-    .stPlotlyChart:hover {
-        filter: drop-shadow(6px 10px 12px rgba(0,0,0,0.3));
-    }
+    .stPlotlyChart { filter: drop-shadow(4px 6px 8px rgba(0,0,0,0.2)); transition: all 0.3s ease; }
+    .stPlotlyChart:hover { filter: drop-shadow(6px 10px 12px rgba(0,0,0,0.3)); }
 
-    /* --- MOBILE OPTIMIZATION --- */
     @media (max-width: 768px) {
         .block-container { padding-left: 0.5rem !important; padding-right: 0.5rem !important; padding-top: 1rem !important; }
         .kpi-grid { gap: 0.8rem; }
@@ -91,7 +73,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. MOTORE DATI ---
+# --- 2. MOTORE DATI & EXPORT ---
 @st.cache_data(ttl=300)
 def get_drive_files_list():
     try:
@@ -119,6 +101,40 @@ def load_dataset(file_id, modified_time, _service):
             return pd.read_csv(fh)
     except Exception: return None
 
+# GENERATORE EXCEL PROFESSIONALE
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    # Utilizziamo XlsxWriter per il controllo totale della formattazione
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Dati')
+        workbook = writer.book
+        worksheet = writer.sheets['Dati']
+        
+        # Formati
+        header_fmt = workbook.add_format({'bold': True, 'bg_color': '#f0f0f0', 'border': 1, 'text_wrap': True, 'valign': 'vcenter'})
+        num_fmt = workbook.add_format({'num_format': '#,##0.0000'}) # 4 decimali come richiesto
+        
+        # Applica formato intestazione
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, header_fmt)
+            
+        # Imposta larghezza colonne e formato numeri
+        for i, col in enumerate(df.columns):
+            # Calcola larghezza basata sul contenuto (max 50 caratteri)
+            max_len = max(
+                df[col].astype(str).map(len).max() if not df[col].empty else 0,
+                len(str(col))
+            )
+            final_len = min(max_len + 2, 50) # Buffer di 2 char, cap a 50
+            
+            # Se è numerico applica i 4 decimali
+            if pd.api.types.is_numeric_dtype(df[col]):
+                worksheet.set_column(i, i, final_len, num_fmt)
+            else:
+                worksheet.set_column(i, i, final_len)
+                
+    return output.getvalue()
+
 def smart_analyze_and_clean(df_in, page_type="Sales"):
     df = df_in.copy()
     
@@ -128,11 +144,10 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
     elif page_type == "Promo":
         target_numeric_cols = ['Quantità prevista', 'Quantità ordinata', 'Importo sconto', 'Sconto promo']
         protected_text_cols = ['Descrizione Cliente', 'Descrizione Prodotto', 'Descrizione Promozione', 'Riferimento', 'Tipo promo', 'Codice prodotto', 'Key Account', 'Decr_Cliente_Fat', 'Week start']
-    else: # Purchase (Placeholder per ora)
+    else: 
         target_numeric_cols = [] 
         protected_text_cols = [] 
 
-    # Logica comune di pulizia
     for col in df.columns:
         if col in ['Numero_Pallet', 'Sovrapponibile', 'COMPANY']: continue 
         if any(t in col for t in protected_text_cols):
@@ -142,12 +157,10 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
         sample = df[col].dropna().astype(str).head(100).tolist()
         if not sample: continue
 
-        # Date
         if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
             try: df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce'); continue 
             except: pass
         
-        # Numeri
         is_target_numeric = any(t in col for t in target_numeric_cols)
         looks_numeric = any(c.isdigit() for s in sample for c in s)
         
@@ -160,7 +173,6 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
                 if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
                     df[col] = converted.fillna(0)
             except: pass
-            
     return df
 
 def guess_column_role(df, page_type="Sales"):
@@ -182,7 +194,7 @@ def guess_column_role(df, page_type="Sales"):
             'start_date': ['Sell in da'], 'status': ['Stato'], 'division': ['Division'], 'type': ['Tipo promo'],
             'week_start': ['Week start']
         }
-    else: # Purchase Placeholder
+    else: 
         guesses = {}
         golden_rules = {}
 
@@ -340,7 +352,7 @@ if page == "📊 Vendite & Fatturazione":
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto")
                     
-                    # --- MODIFICA V30.1: FORM PER STABILITÀ ---
+                    # FORM STABILE + EXPORT EXCEL
                     with st.form("product_explosion_form"):
                         st.caption("Seleziona i filtri e premi 'Aggiorna Analisi' per calcolare.")
                         
@@ -355,13 +367,12 @@ if page == "📊 Vendite & Fatturazione":
                             format_func=lambda x: f"{x} (Incasso Tot: € {tot_euro_target:,.0f})" if x == "TUTTI I PRODOTTI" else f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
                         )
                         
-                        # Calcolo preliminare per popolare il filtro clienti in base ai prodotti (opzionale, qui mostriamo tutti per stabilità)
-                        # Per vera stabilità nel form, meglio mostrare tutti i clienti disponibili nel df_target
                         cust_available = sorted(df_target[col_customer].dropna().astype(str).unique().tolist())
                         sel_c = st.multiselect("Filtra per Ragione Sociale Cliente:", cust_available, placeholder="Tutti i clienti...")
                         
                         submit_btn = st.form_submit_button("🔄 Aggiorna Analisi")
 
+                    # GESTIONE PERSISTENZA PER DOWNLOAD
                     if submit_btn:
                         if "TUTTI I PRODOTTI" in sel_p:
                             df_ps = df_target
@@ -371,34 +382,53 @@ if page == "📊 Vendite & Fatturazione":
                         if sel_c:
                             df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
 
-                        # Aggregazione
                         cb = df_ps.groupby([col_customer, col_prod]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                         
-                        # --- MODIFICA V30.1: CALCOLO PREZZI MEDI ---
-                        # Gestione divisione per zero con numpy
+                        # Calcolo Prezzi Medi
                         cb['Valore Medio €/Kg'] = np.where(cb[col_kg] > 0, cb[col_euro] / cb[col_kg], 0)
                         cb['Valore Medio €/CT'] = np.where(cb[col_cartons] > 0, cb[col_euro] / cb[col_cartons], 0)
+                        
+                        st.session_state['sales_explosion_df'] = cb
 
+                    if 'sales_explosion_df' in st.session_state:
+                        df_show = st.session_state['sales_explosion_df']
                         st.dataframe(
-                            cb, 
+                            df_show, 
                             column_config={
                                 col_customer: st.column_config.TextColumn("👤 Ragione Sociale", width="medium"), 
                                 col_prod: st.column_config.TextColumn("🏷️ Prodotto", width="medium"),
                                 col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), 
                                 col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), 
                                 col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f"),
-                                # Nuove Colonne
                                 'Valore Medio €/Kg': st.column_config.NumberColumn("Prezzo €/Kg", format="€ %.2f"),
                                 'Valore Medio €/CT': st.column_config.NumberColumn("Prezzo €/CT", format="€ %.2f"),
                             }, 
                             hide_index=True, use_container_width=True, height=450
+                        )
+                        
+                        # DOWNLOAD BUTTON EXCEL
+                        excel_data = convert_df_to_excel(df_show)
+                        st.download_button(
+                            label="📥 Scarica Report Excel",
+                            data=excel_data,
+                            file_name=f"Explosion_Report_{datetime.date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                 else:
                     st.markdown(f"#### 🧾 Dettaglio Acquisti")
                     st.caption(f"Portafoglio ordini per: {sel_target}")
                     ps = df_target.groupby(col_prod).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                     st.dataframe(ps, column_config={col_prod: st.column_config.TextColumn("🏷️ Articolo / Prodotto", width="large"), col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")}, hide_index=True, use_container_width=True, height=500)
-
+                    
+                    # DOWNLOAD PER SINGLE CUSTOMER DETAIL
+                    excel_data_single = convert_df_to_excel(ps)
+                    st.download_button(
+                        label="📥 Scarica Dettaglio Excel",
+                        data=excel_data_single,
+                        file_name=f"Dettaglio_{sel_target}_{datetime.date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_download_single"
+                    )
 
 # =====================================================================
 # PAGINA 2: CUSTOMER PROMO 
@@ -533,7 +563,6 @@ elif page == "🎁 Analisi Customer Promo":
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
             
-            # --- MODIFICA V30.1: FORM ANCHE PER PROMO PER STABILITÀ ---
             with st.form("promo_detail_form"):
                 st.caption("Seleziona i filtri e premi 'Aggiorna Tabella' per applicare.")
                 f1, f2, f3, f4 = st.columns(4)
@@ -569,9 +598,13 @@ elif page == "🎁 Analisi Customer Promo":
                     df_display_sorted = df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
                 else:
                     df_display_sorted = df_display[cols_to_show]
+                
+                st.session_state['promo_detail_df'] = df_display_sorted
 
+            if 'promo_detail_df' in st.session_state:
+                df_p_show = st.session_state['promo_detail_df']
                 st.dataframe(
-                    df_display_sorted,
+                    df_p_show,
                     column_config={
                         p_qty_f: st.column_config.NumberColumn("Forecast Qty", format="%.0f"),
                         p_qty_a: st.column_config.NumberColumn("Actual Qty", format="%.0f"),
@@ -579,12 +612,22 @@ elif page == "🎁 Analisi Customer Promo":
                     },
                     hide_index=True, use_container_width=True, height=500
                 )
+                
+                # DOWNLOAD BUTTON EXCEL PROMO
+                excel_data_promo = convert_df_to_excel(df_p_show)
+                st.download_button(
+                    label="📥 Scarica Report Promo Excel",
+                    data=excel_data_promo,
+                    file_name=f"Promo_Report_{datetime.date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_download_promo"
+                )
 
         else:
             st.warning("Nessuna promozione trovata per i filtri selezionati.")
 
 # =====================================================================
-# PAGINA 3: ANALISI ACQUISTI (New v30.0 Placeholder)
+# PAGINA 3: ANALISI ACQUISTI
 # =====================================================================
 elif page == "📦 Analisi Acquisti":
     st.title("📦 Analisi Acquisti (Purchase History)")
@@ -593,7 +636,6 @@ elif page == "📦 Analisi Acquisti":
         file_map = {f['name']: f for f in files}
         target_file_purch = "Purchase_orders_history"
         file_list = list(file_map.keys())
-        # Cerca il file con corrispondenza parziale nel nome
         default_idx_purch = next((i for i, f in enumerate(file_list) if target_file_purch.lower() in f.lower()), 0)
         
         sel_purch_file = st.sidebar.selectbox("1. File Sorgente Acquisti", file_list, index=default_idx_purch)
@@ -601,7 +643,6 @@ elif page == "📦 Analisi Acquisti":
             df_purch_raw = load_dataset(file_map[sel_purch_file]['id'], file_map[sel_purch_file]['modifiedTime'], service)
             
             if df_purch_raw is not None:
-                # Usa il motore di pulizia generico per ora
                 df_purch_processed = smart_analyze_and_clean(df_purch_raw, "Purchase")
                 
                 st.info("ℹ️ Pagina pronta. In attesa della legenda colonne per attivare i calcoli KPI.")
