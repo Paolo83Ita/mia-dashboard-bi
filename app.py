@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v32.0) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v33.0) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v32.0",
+    page_title="EITA Analytics Pro v33.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -68,13 +68,6 @@ st.markdown("""
     .stPlotlyChart { filter: drop-shadow(4px 6px 8px rgba(0,0,0,0.2)); transition: all 0.3s ease; }
     .stPlotlyChart:hover { filter: drop-shadow(6px 10px 12px rgba(0,0,0,0.3)); }
 
-    /* Stile per gli Expander (Albero) */
-    .streamlit-expanderHeader {
-        background-color: rgba(240, 242, 246, 0.5);
-        border-radius: 8px;
-        font-weight: 600;
-    }
-
     @media (max-width: 768px) {
         .block-container { padding-left: 0.5rem !important; padding-right: 0.5rem !important; padding-top: 1rem !important; }
         .kpi-grid { gap: 0.8rem; }
@@ -115,24 +108,35 @@ def load_dataset(file_id, modified_time, _service):
 def convert_df_to_excel(df):
     output = io.BytesIO()
     try:
+        # Assicura che l'indice sia resettato per l'export Excel (formato piatto migliore)
+        if isinstance(df.index, pd.MultiIndex):
+            df_export = df.reset_index()
+        else:
+            df_export = df.copy()
+
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Dati')
+            df_export.to_excel(writer, index=False, sheet_name='Dati')
             workbook = writer.book
             worksheet = writer.sheets['Dati']
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#f0f0f0', 'border': 1, 'text_wrap': True, 'valign': 'vcenter'})
             num_fmt = workbook.add_format({'num_format': '#,##0.0000'})
-            for col_num, value in enumerate(df.columns.values):
+            
+            for col_num, value in enumerate(df_export.columns.values):
                 worksheet.write(0, col_num, value, header_fmt)
-            for i, col in enumerate(df.columns):
-                max_len = max(df[col].astype(str).map(len).max() if not df[col].empty else 0, len(str(col)))
+            
+            for i, col in enumerate(df_export.columns):
+                max_len = max(df_export[col].astype(str).map(len).max() if not df_export[col].empty else 0, len(str(col)))
                 final_len = min(max_len + 5, 60)
-                if pd.api.types.is_numeric_dtype(df[col]):
+                if pd.api.types.is_numeric_dtype(df_export[col]):
                     worksheet.set_column(i, i, final_len, num_fmt)
                 else:
                     worksheet.set_column(i, i, final_len)
     except ModuleNotFoundError:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-             df.to_excel(writer, index=False, sheet_name='Dati')
+             if isinstance(df.index, pd.MultiIndex):
+                 df.reset_index().to_excel(writer, index=False, sheet_name='Dati')
+             else:
+                 df.to_excel(writer, index=False, sheet_name='Dati')
     return output.getvalue()
 
 def smart_analyze_and_clean(df_in, page_type="Sales"):
@@ -342,12 +346,13 @@ if page == "📊 Vendite & Fatturazione":
 
             with col_r:
                 if "TUTTI" in sel_target:
-                    st.markdown("#### 💥 Esplosione Prodotto (Vista Albero)")
+                    st.markdown("#### 💥 Esplosione Prodotto (Tabella Pivot)")
                     
                     with st.form("product_explosion_form"):
                         st.caption("Configura la vista gerarchica e premi 'Aggiorna Analisi'.")
                         
-                        group_mode = st.radio("Gerarchia Raggruppamento:", ["Prodotto → Cliente", "Cliente → Prodotto"], horizontal=True)
+                        group_mode = st.radio("Gerarchia Raggruppamento (Livelli):", ["Prodotto → Cliente", "Cliente → Prodotto"], horizontal=True)
+                        flat_view = st.checkbox("Appiattisci Tabella (Mostra tutte le colonne ripetute)", value=False)
 
                         all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
                         tot_euro_target = df_target[col_euro].sum()
@@ -372,66 +377,52 @@ if page == "📊 Vendite & Fatturazione":
                         if sel_c:
                             df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
 
-                        # Calcolo Flat Dataframe per Export (Completo)
-                        primary_export, secondary_export = col_customer, col_prod # Export standard sempre Cliente -> Prodotto
+                        # Logica Gerarchica
+                        if group_mode == "Prodotto → Cliente":
+                            primary, secondary = col_prod, col_customer
+                        else:
+                            primary, secondary = col_customer, col_prod
+
+                        # Aggregazione
+                        cb = df_ps.groupby([primary, secondary]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).sort_values(col_euro, ascending=False)
                         
-                        cb = df_ps.groupby([col_customer, col_prod]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
+                        # Calcoli Medi Ponderati (Sul livello di raggruppamento)
                         cb['Valore Medio €/Kg'] = np.where(cb[col_kg] > 0, cb[col_euro] / cb[col_kg], 0)
                         cb['Valore Medio €/CT'] = np.where(cb[col_cartons] > 0, cb[col_euro] / cb[col_cartons], 0)
                         
-                        col_order_display = [col_customer, col_prod, col_cartons, col_kg, col_euro, 'Valore Medio €/Kg', 'Valore Medio €/CT']
-                        st.session_state['sales_explosion_flat'] = cb[col_order_display]
-                        st.session_state['sales_group_mode'] = group_mode
-                        st.session_state['sales_df_tree'] = df_ps # Raw data for tree loop
+                        if flat_view:
+                            cb = cb.reset_index() # Appiattisce per mostrare tutto
+                            col_order = [primary, secondary, col_cartons, col_kg, col_euro, 'Valore Medio €/Kg', 'Valore Medio €/CT']
+                            st.session_state['sales_pivot_df'] = cb[col_order]
+                        else:
+                            # Mantiene MultiIndex per la visualizzazione ad albero (Celle unite)
+                            st.session_state['sales_pivot_df'] = cb
 
-                    if 'sales_explosion_flat' in st.session_state:
-                        # 1. VISUALIZZAZIONE AD ALBERO
-                        df_tree_raw = st.session_state['sales_df_tree']
-                        mode = st.session_state['sales_group_mode']
+                    if 'sales_pivot_df' in st.session_state:
+                        df_show = st.session_state['sales_pivot_df']
                         
-                        primary_col = col_prod if mode == "Prodotto → Cliente" else col_customer
-                        secondary_col = col_customer if mode == "Prodotto → Cliente" else col_prod
-                        
-                        # Raggruppa per il livello primario per creare gli expander
-                        primary_groups = df_tree_raw.groupby(primary_col).agg({col_euro: 'sum'}).sort_values(col_euro, ascending=False)
-                        
-                        # Limitiamo a 50 gruppi per performance (paginazione implicita)
-                        top_50_groups = primary_groups.head(50).index.tolist()
-                        
-                        st.write(f"Visualizzazione Top 50 {mode.split(' → ')[0]} per valore:")
-                        
-                        for p_item in top_50_groups:
-                            sub_df = df_tree_raw[df_tree_raw[primary_col] == p_item]
-                            
-                            # Totali gruppo
-                            g_euro = sub_df[col_euro].sum()
-                            g_kg = sub_df[col_kg].sum()
-                            
-                            with st.expander(f"📂 {p_item}  |  € {g_euro:,.0f}  |  {g_kg:,.0f} Kg"):
-                                # Tabella di dettaglio (Figli)
-                                detail_agg = sub_df.groupby(secondary_col).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
-                                detail_agg['Valore Medio €/Kg'] = np.where(detail_agg[col_kg] > 0, detail_agg[col_euro] / detail_agg[col_kg], 0)
-                                detail_agg['Valore Medio €/CT'] = np.where(detail_agg[col_cartons] > 0, detail_agg[col_euro] / detail_agg[col_cartons], 0)
-                                
-                                st.dataframe(
-                                    detail_agg,
-                                    column_config={
-                                        secondary_col: st.column_config.TextColumn("Dettaglio", width="medium"),
-                                        col_euro: st.column_config.NumberColumn("Valore", format="€ %.2f"),
-                                        col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
-                                        'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg", format="€ %.2f"),
-                                        'Valore Medio €/CT': st.column_config.NumberColumn("€/CT", format="€ %.2f"),
-                                    },
-                                    hide_index=True, use_container_width=True
-                                )
+                        # Visualizzazione Tabella Pivot / Albero
+                        st.dataframe(
+                            df_show,
+                            column_config={
+                                col_customer: st.column_config.TextColumn("Cliente", width="medium"),
+                                col_prod: st.column_config.TextColumn("Prodotto", width="medium"),
+                                col_cartons: st.column_config.NumberColumn("CT", format="%d"),
+                                col_kg: st.column_config.NumberColumn("Kg", format="%.0f"),
+                                col_euro: st.column_config.NumberColumn("Valore", format="€ %.2f"),
+                                'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg", format="€ %.2f"),
+                                'Valore Medio €/CT': st.column_config.NumberColumn("€/CT", format="€ %.2f"),
+                            },
+                            use_container_width=True,
+                            height=600 # Tabella più alta per vedere bene l'albero
+                        )
 
-                        # 2. DOWNLOAD EXCEL COMPLETO (FLAT)
-                        st.markdown("---")
-                        excel_data = convert_df_to_excel(st.session_state['sales_explosion_flat'])
+                        # DOWNLOAD EXCEL COMPLETO
+                        excel_data = convert_df_to_excel(df_show)
                         st.download_button(
-                            label="📥 Scarica Report Excel Completo (Flat Data)",
+                            label="📥 Scarica Report Excel (Completo)",
                             data=excel_data,
-                            file_name=f"Explosion_Report_Tree_{datetime.date.today()}.xlsx",
+                            file_name=f"Explosion_Pivot_Report_{datetime.date.today()}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
 
