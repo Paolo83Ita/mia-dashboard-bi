@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE EXTREME ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v26",
+    page_title="EITA Analytics Pro v26.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -152,7 +152,11 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
                     clean = df[col].astype(str).str.replace('€', '').str.replace('%', '').str.replace(' ', '')
                     if clean.str.contains(',', regex=False).any():
                         clean = clean.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-                    df[col] = pd.to_numeric(clean, errors='coerce').fillna(0)
+                    converted = pd.to_numeric(clean, errors='coerce')
+                    # PROTEZIONE: Sostituisce i valori solo se è una colonna strettamente numerica
+                    # o se la conversione matematica è andata a buon fine per almeno il 70% delle righe.
+                    if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
+                        df[col] = converted.fillna(0)
                 except: pass
 
     return df
@@ -400,11 +404,10 @@ else:
 
         # Filtro Data (Reso simile alle Vendite)
         if p_start in df_pglobal.columns and pd.api.types.is_datetime64_any_dtype(df_pglobal[p_start]):
-            min_date = df_pglobal[p_start].min()
-            max_date = df_pglobal[p_start].max()
-            if pd.notnull(min_date) and pd.notnull(max_date):
-                # Usiamo min e max del dataset come default per mostrare tutto
-                d_start, d_end = st.sidebar.date_input("Periodo Sell-In", [min_date.date(), max_date.date()], format="DD/MM/YYYY")
+            def_start, def_end = datetime.date(2026, 1, 1), datetime.date(2026, 1, 31)
+            sel_dates = st.sidebar.date_input("Periodo Sell-In", [def_start, def_end], format="DD/MM/YYYY")
+            if len(sel_dates) == 2:
+                d_start, d_end = sel_dates
                 df_pglobal = df_pglobal[(df_pglobal[p_start].dt.date >= d_start) & (df_pglobal[p_start].dt.date <= d_end)]
 
         st.sidebar.markdown("### 🎛️ Filtri Avanzati Promo")
@@ -485,14 +488,13 @@ else:
             
             # --- FILTRO CLIENTE SPECIFICO SOPRA LA TABELLA ---
             if p_cust in df_pglobal.columns:
-                cust_list = sorted(df_pglobal[p_cust].dropna().astype(str).unique())
-                st.write("Filtra dettagli per cliente:")
-                sel_promo_cust = st.multiselect("Descrizione Cliente", cust_list, placeholder="Scegli uno o più clienti...")
+                cust_list = ["TUTTI I CLIENTI"] + sorted(df_pglobal[p_cust].dropna().astype(str).unique())
+                sel_promo_cust = st.multiselect("Scegli cliente:", cust_list, default=["TUTTI I CLIENTI"], placeholder="Scegli uno o più clienti...")
                 
-                if sel_promo_cust:
-                    df_display = df_pglobal[df_pglobal[p_cust].astype(str).isin(sel_promo_cust)]
-                else:
+                if "TUTTI I CLIENTI" in sel_promo_cust or not sel_promo_cust:
                     df_display = df_pglobal
+                else:
+                    df_display = df_pglobal[df_pglobal[p_cust].astype(str).isin(sel_promo_cust)]
             else:
                 df_display = df_pglobal
 
@@ -510,4 +512,4 @@ else:
             )
 
         else:
-            st.warning("Nessuna promozione trovata per i filtri selezionati.")
+            st.warning("Nessuna promozione trovata per i filtri selezionati.")```
