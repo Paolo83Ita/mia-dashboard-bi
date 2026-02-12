@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v35.0) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v35.1) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v35.0",
+    page_title="EITA Analytics Pro v35.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -371,7 +371,10 @@ if page == "📊 Vendite & Fatturazione":
                         
                         submit_btn = st.form_submit_button("🔄 Applica Filtri")
 
-                    if submit_btn or 'sales_master_df' in st.session_state:
+                    # --- FIX STABILITÀ (v35.1) ---
+                    # Il controllo corretto è su 'sales_raw_df' (che viene salvato), NON 'sales_master_df'
+                    if submit_btn or 'sales_raw_df' in st.session_state:
+                        
                         # Logica di caricamento dati (eseguita al submit o se c'è storico)
                         if submit_btn:
                             df_ps = df_target.copy()
@@ -382,6 +385,9 @@ if page == "📊 Vendite & Fatturazione":
                             
                             st.session_state['sales_raw_df'] = df_ps
                             st.session_state['sales_group_mode'] = group_mode
+                            # Reset selettore per evitare errori se la lista cambia
+                            if 'drill_down_selector' in st.session_state:
+                                del st.session_state['drill_down_selector']
                         
                         # Recupero dati
                         df_tree_raw = st.session_state.get('sales_raw_df', df_target)
