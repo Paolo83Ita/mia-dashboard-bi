@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (v37.1 - Entity Filter in Promo Chart) ---
+# --- 1. CONFIGURAZIONE & STILE (v37.2 - Fix Cascading Filters) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v37.1",
+    page_title="EITA Analytics Pro v37.2",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -829,27 +829,37 @@ elif page == "🎁 Analisi Customer Promo":
                     col_ent = 'Entity'
                     
                     if all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
-                        # Filters for this chart
-                        with st.form("promo_sales_chart_filter"):
-                            st.caption("Filtra Dati Vendite per Grafico Promo")
-                            
-                            # Entity Filter Logic
-                            all_ents = sorted(df_s[col_ent].dropna().astype(str).unique()) if col_ent in df_s.columns else []
-                            default_ent = ['EITA'] if 'EITA' in all_ents else []
-                            sel_ent_chart = st.multiselect("Filtra Entità", all_ents, default=default_ent)
+                        st.caption("Filtra Dati Vendite per Grafico Promo")
 
-                            all_prods = sorted(df_s[col_art].dropna().astype(str).unique())
-                            all_custs = sorted(df_s[col_cli].dropna().astype(str).unique())
-                            
-                            sel_prod_chart = st.multiselect("Filtra Articolo", all_prods, placeholder="Tutti...")
-                            sel_cust_chart = st.multiselect("Filtra Cliente", all_custs, placeholder="Tutti...")
-                            
-                            apply_chart_filters = st.form_submit_button("Aggiorna Grafico")
+                        # --- FIX: Entity Filter Moved OUTSIDE Form for Immediate Rerun ---
+                        all_ents = sorted(df_s[col_ent].dropna().astype(str).unique()) if col_ent in df_s.columns else []
+                        default_ent = ['EITA'] if 'EITA' in all_ents else []
                         
-                        # Apply Filters (use variables directly to support default load)
+                        # This widget now triggers a page rerun when changed!
+                        sel_ent_chart = st.multiselect(
+                            "1. Filtra Entità (Pre-filtro)", 
+                            all_ents, 
+                            default=default_ent,
+                            key="promo_chart_entity_filter_outside"
+                        )
+
+                        # Filter Dataset IMMEDIATELY based on Entity
                         if sel_ent_chart and col_ent in df_s.columns:
                              df_s = df_s[df_s[col_ent].astype(str).isin(sel_ent_chart)]
                         
+                        # --- Form for Product/Customer Filters (Cascading works now) ---
+                        with st.form("promo_sales_chart_filter"):
+                            
+                            # Populated based on already filtered df_s
+                            all_prods = sorted(df_s[col_art].dropna().astype(str).unique())
+                            all_custs = sorted(df_s[col_cli].dropna().astype(str).unique())
+                            
+                            sel_prod_chart = st.multiselect("2. Filtra Articolo", all_prods, placeholder="Tutti...")
+                            sel_cust_chart = st.multiselect("3. Filtra Cliente", all_custs, placeholder="Tutti...")
+                            
+                            apply_chart_filters = st.form_submit_button("Aggiorna Grafico")
+                        
+                        # Apply secondary filters
                         if sel_prod_chart: 
                              df_s = df_s[df_s[col_art].astype(str).isin(sel_prod_chart)]
                         if sel_cust_chart: 
