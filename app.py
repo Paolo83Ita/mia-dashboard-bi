@@ -11,7 +11,7 @@ import numpy as np
 
 # --- 1. CONFIGURAZIONE & STILE EXTREME (v27) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v27.0",
+    page_title="EITA Analytics Pro v28.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -365,13 +365,32 @@ if page == "📊 Vendite & Fatturazione":
             with col_r:
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto")
-                    st.caption("Seleziona un prodotto per vedere quali clienti lo acquistano.")
+                    st.caption("Seleziona uno o più prodotti per vedere i clienti acquirenti.")
                     all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
-                    sel_p = st.selectbox("Catalogo Prodotti (Top Selling in cima):", all_p_sorted.index.tolist(), format_func=lambda x: f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})")
+                    
+                    # SOSTITUITO SELECTBOX CON MULTISELECT
+                    sel_p = st.multiselect(
+                        "Catalogo Prodotti (Multi-selezione attiva):", 
+                        all_p_sorted.index.tolist(), 
+                        default=[all_p_sorted.index[0]] if len(all_p_sorted) > 0 else None, 
+                        format_func=lambda x: f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
+                    )
+                    
                     if sel_p:
-                        df_ps = df_target[df_target[col_prod] == sel_p]
-                        cb = df_ps.groupby(col_customer).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
-                        st.dataframe(cb, column_config={col_customer: st.column_config.TextColumn("👤 Ragione Sociale Cliente", width="large"), col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")}, hide_index=True, use_container_width=True, height=500)
+                        df_ps = df_target[df_target[col_prod].isin(sel_p)]
+                        # Raggruppiamo per cliente e prodotto per vedere lo spaccato esatto
+                        cb = df_ps.groupby([col_customer, col_prod]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
+                        st.dataframe(
+                            cb, 
+                            column_config={
+                                col_customer: st.column_config.TextColumn("👤 Ragione Sociale Cliente", width="large"), 
+                                col_prod: st.column_config.TextColumn("🏷️ Prodotto", width="medium"),
+                                col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), 
+                                col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), 
+                                col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")
+                            }, 
+                            hide_index=True, use_container_width=True, height=500
+                        )
                 else:
                     st.markdown(f"#### 🧾 Dettaglio Acquisti")
                     st.caption(f"Portafoglio ordini per: {sel_target}")
@@ -518,21 +537,50 @@ else:
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
             
-            if p_cust in df_pglobal.columns:
-                cust_list = ["TUTTI I CLIENTI"] + sorted(df_pglobal[p_cust].dropna().astype(str).unique())
-                sel_promo_cust = st.multiselect("Scegli cliente:", cust_list, default=["TUTTI I CLIENTI"], placeholder="Scegli uno o più clienti...")
-                
-                if "TUTTI I CLIENTI" in sel_promo_cust or not sel_promo_cust:
-                    df_display = df_pglobal
+            # NUOVI FILTRI MULTI-SELEZIONE SPECIFICI PER LE COLONNE DELLA TABELLA
+            f_col1, f_col2, f_col3 = st.columns(3)
+            
+            with f_col1:
+                if p_cust in df_pglobal.columns:
+                    cust_list = sorted(df_pglobal[p_cust].dropna().astype(str).unique())
+                    sel_promo_cust = st.multiselect("👤 Filtra Cliente", cust_list, placeholder="Tutti i clienti...")
                 else:
-                    df_display = df_pglobal[df_pglobal[p_cust].astype(str).isin(sel_promo_cust)]
-            else:
-                df_display = df_pglobal
+                    sel_promo_cust = []
+                    
+            with f_col2:
+                if p_prod in df_pglobal.columns:
+                    prod_list = sorted(df_pglobal[p_prod].dropna().astype(str).unique())
+                    sel_promo_prod = st.multiselect("🏷️ Filtra Prodotto", prod_list, placeholder="Tutti i prodotti...")
+                else:
+                    sel_promo_prod = []
+                    
+            with f_col3:
+                promo_desc_col = guesses_p['promo_desc'] or 'Descrizione Promozione'
+                if promo_desc_col in df_pglobal.columns:
+                    desc_list = sorted(df_pglobal[promo_desc_col].dropna().astype(str).unique())
+                    sel_promo_desc = st.multiselect("🎁 Filtra Promozione", desc_list, placeholder="Tutte le promozioni...")
+                else:
+                    sel_promo_desc = []
+
+            # Applicazione dinamica dei filtri sulla tabella
+            df_display = df_pglobal.copy()
+            if sel_promo_cust:
+                df_display = df_display[df_display[p_cust].astype(str).isin(sel_promo_cust)]
+            if sel_promo_prod:
+                df_display = df_display[df_display[p_prod].astype(str).isin(sel_promo_prod)]
+            if sel_promo_desc:
+                df_display = df_display[df_display[promo_desc_col].astype(str).isin(sel_promo_desc)]
 
             cols_to_show = [c for c in [guesses_p['promo_id'], promo_desc_col, p_cust, p_prod, p_start, p_qty_f, p_qty_a, 'Sconto promo'] if c in df_display.columns]
             
+            # Ordinamento sicuro
+            if p_qty_a in df_display.columns:
+                df_display_sorted = df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
+            else:
+                df_display_sorted = df_display[cols_to_show]
+                
             st.dataframe(
-                df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False),
+                df_display_sorted,
                 column_config={
                     p_qty_f: st.column_config.NumberColumn("Forecast Qty", format="%.0f"),
                     p_qty_a: st.column_config.NumberColumn("Actual Qty", format="%.0f"),
