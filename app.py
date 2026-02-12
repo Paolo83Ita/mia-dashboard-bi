@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v34.2) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v35.0) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v34.2",
+    page_title="EITA Analytics Pro v35.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -68,9 +68,13 @@ st.markdown("""
     .stPlotlyChart { filter: drop-shadow(4px 6px 8px rgba(0,0,0,0.2)); transition: all 0.3s ease; }
     .stPlotlyChart:hover { filter: drop-shadow(6px 10px 12px rgba(0,0,0,0.3)); }
     
-    /* Evidenzia la riga selezionata nella tabella */
-    [data-testid="stDataFrame"] table tr:hover td {
-        background-color: rgba(0, 198, 255, 0.1) !important;
+    /* Stile per evidenziare la sezione dettaglio */
+    .detail-section {
+        background-color: #f8f9fa;
+        border-left: 5px solid #00c6ff;
+        padding: 15px;
+        margin-top: 20px;
+        border-radius: 4px;
     }
 
     @media (max-width: 768px) {
@@ -346,7 +350,7 @@ if page == "📊 Vendite & Fatturazione":
             with col_r:
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto (Master-Detail)")
-                    st.info("💡 Clicca su una riga della tabella principale per vedere l'esplosione dettagliata qui sotto.")
+                    st.info("💡 Usa il menu a tendina qui sotto per selezionare il dettaglio. È più affidabile del clic.")
                     
                     with st.form("product_explosion_form"):
                         group_mode = st.radio("Gerarchia Raggruppamento (Livelli):", ["Prodotto → Cliente", "Cliente → Prodotto"], horizontal=True)
@@ -390,10 +394,8 @@ if page == "📊 Vendite & Fatturazione":
                         master_df = df_tree_raw.groupby(primary_col).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                         master_df['Valore Medio €/Kg'] = np.where(master_df[col_kg] > 0, master_df[col_euro] / master_df[col_kg], 0)
                         master_df['Valore Medio €/CT'] = np.where(master_df[col_cartons] > 0, master_df[col_euro] / master_df[col_cartons], 0)
-
-                        st.markdown(f"**Livello 1: {primary_col} (Seleziona una riga)**")
                         
-                        selection = st.dataframe(
+                        st.dataframe(
                             master_df,
                             column_config={
                                 primary_col: st.column_config.TextColumn("Elemento (Master)", width="medium"),
@@ -404,34 +406,24 @@ if page == "📊 Vendite & Fatturazione":
                                 'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
                             },
                             use_container_width=True,
-                            hide_index=True,
-                            on_select="rerun", # ATTIVA INTERATTIVITÀ
-                            selection_mode="single-row"
+                            hide_index=True
                         )
 
-                        # 2. LIVELLO DETTAGLIO (Appare al click)
-                        if selection and selection.selection.rows:
-                            selected_idx = selection.selection.rows[0]
-                            selected_val = master_df.iloc[selected_idx][primary_col]
-                            
-                            st.markdown(f"⬇️ **Livello 2: Dettaglio per '{selected_val}'**")
-                            
-                            # FIX ULTRA-ROBUSTO V34.2: Normalizzazione Totale
-                            def normalize_val(v):
-                                s = str(v).strip()
-                                if s.endswith('.0'): s = s[:-2]
-                                return s
-
-                            col_normalized = df_tree_raw[primary_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-                            val_normalized = normalize_val(selected_val)
-                            
-                            mask = col_normalized == val_normalized
-                            detail_df = df_tree_raw[mask]
+                        # --- SELETTORE ROBUSTO (NO CLICK) ---
+                        st.markdown(f"⬇️ **Seleziona un elemento per vedere il dettaglio:**")
+                        unique_elements = master_df[primary_col].unique()
+                        selected_val = st.selectbox("Elemento da esplorare:", unique_elements, key="drill_down_selector")
+                        
+                        if selected_val:
+                            # Filtro GARANTITO perché selected_val viene direttamente dai dati
+                            detail_df = df_tree_raw[df_tree_raw[primary_col] == selected_val]
                             
                             detail_agg = detail_df.groupby(secondary_col).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
                             
                             detail_agg['Valore Medio €/Kg'] = np.where(detail_agg[col_kg] > 0, detail_agg[col_euro] / detail_agg[col_kg], 0)
                             detail_agg['Valore Medio €/CT'] = np.where(detail_agg[col_cartons] > 0, detail_agg[col_euro] / detail_agg[col_cartons], 0)
+
+                            st.markdown(f"""<div class="detail-section">Stai visualizzando il dettaglio per: <b>{selected_val}</b></div>""", unsafe_allow_html=True)
 
                             st.dataframe(
                                 detail_agg,
@@ -446,8 +438,6 @@ if page == "📊 Vendite & Fatturazione":
                                 use_container_width=True,
                                 hide_index=True
                             )
-                        else:
-                            st.caption("👆 Seleziona una riga sopra per vedere i dettagli.")
 
                         # DOWNLOAD EXCEL COMPLETO (Sempre Flat per comodità)
                         # Ricostruiamo il flat dataframe completo per il download
