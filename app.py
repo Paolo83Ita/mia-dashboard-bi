@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE EXTREME (v30.0) ---
+# --- 1. CONFIGURAZIONE & STILE EXTREME (v30.1) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v30.0",
+    page_title="EITA Analytics Pro v30.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,7 +64,6 @@ st.markdown("""
         background: linear-gradient(180deg, #ff9a9e, #fecfef);
     }
     
-    /* Colore specifico per Acquisti (Verde/Teal) */
     .kpi-card.purch-card::before {
         background: linear-gradient(180deg, #43e97b, #38f9d7);
     }
@@ -152,14 +151,12 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
         is_target_numeric = any(t in col for t in target_numeric_cols)
         looks_numeric = any(c.isdigit() for s in sample for c in s)
         
-        if is_target_numeric or (looks_numeric and page_type != "Purchase"): # Per Purchase aspetto la legenda prima di forzare
+        if is_target_numeric or (looks_numeric and page_type != "Purchase"):
             try:
                 clean_col = df[col].astype(str).str.replace('€', '').str.replace('%', '').str.replace(' ', '')
                 if clean_col.str.contains(',', regex=False).any():
                     clean_col = clean_col.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
                 converted = pd.to_numeric(clean_col, errors='coerce')
-                
-                # Applica conversione se target o se alta confidenza
                 if is_target_numeric or converted.notna().sum() / len(converted) > 0.7:
                     df[col] = converted.fillna(0)
             except: pass
@@ -225,11 +222,6 @@ if page == "📊 Vendite & Fatturazione":
     if df_processed is not None:
         guesses = guess_column_role(df_processed, "Sales")
         all_cols = df_processed.columns.tolist()
-        
-        # ... (Codice esistente pagina 1 invariato) ...
-        # (Per brevità ometto la ripetizione del blocco Pagina 1 già funzionante, 
-        #  ma nel file finale DEVE ESSERCI TUTTO come nella v29.1)
-        #  INCOLLARE QUI LA LOGICA DELLA PAGINA 1 DALLA V29.1
         
         with st.sidebar.expander("⚙️ Mappatura Colonne", expanded=False):
             def set_idx(guess, options): return options.index(guess) if guess in options else 0
@@ -348,32 +340,45 @@ if page == "📊 Vendite & Fatturazione":
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto")
                     
-                    all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
-                    tot_euro_target = df_target[col_euro].sum()
-                    prod_options = ["TUTTI I PRODOTTI"] + all_p_sorted.index.tolist()
-                    
-                    # --- SELEZIONE MULTIPLA PRODOTTO CON "TUTTI" ---
-                    sel_p = st.multiselect(
-                        "Seleziona uno o più Prodotti:", 
-                        prod_options, 
-                        default=["TUTTI I PRODOTTI"],
-                        format_func=lambda x: f"{x} (Incasso Tot: € {tot_euro_target:,.0f})" if x == "TUTTI I PRODOTTI" else f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
-                    )
-                    
-                    if sel_p:
+                    # --- MODIFICA V30.1: FORM PER STABILITÀ ---
+                    with st.form("product_explosion_form"):
+                        st.caption("Seleziona i filtri e premi 'Aggiorna Analisi' per calcolare.")
+                        
+                        all_p_sorted = df_target.groupby(col_prod)[col_euro].sum().sort_values(ascending=False)
+                        tot_euro_target = df_target[col_euro].sum()
+                        prod_options = ["TUTTI I PRODOTTI"] + all_p_sorted.index.tolist()
+                        
+                        sel_p = st.multiselect(
+                            "Seleziona uno o più Prodotti:", 
+                            prod_options, 
+                            default=["TUTTI I PRODOTTI"],
+                            format_func=lambda x: f"{x} (Incasso Tot: € {tot_euro_target:,.0f})" if x == "TUTTI I PRODOTTI" else f"{x} (Incasso Tot: € {all_p_sorted[x]:,.0f})"
+                        )
+                        
+                        # Calcolo preliminare per popolare il filtro clienti in base ai prodotti (opzionale, qui mostriamo tutti per stabilità)
+                        # Per vera stabilità nel form, meglio mostrare tutti i clienti disponibili nel df_target
+                        cust_available = sorted(df_target[col_customer].dropna().astype(str).unique().tolist())
+                        sel_c = st.multiselect("Filtra per Ragione Sociale Cliente:", cust_available, placeholder="Tutti i clienti...")
+                        
+                        submit_btn = st.form_submit_button("🔄 Aggiorna Analisi")
+
+                    if submit_btn:
                         if "TUTTI I PRODOTTI" in sel_p:
                             df_ps = df_target
                         else:
                             df_ps = df_target[df_target[col_prod].isin(sel_p)]
                         
-                        # --- SELEZIONE MULTIPLA CLIENTE ---
-                        cust_in_selection = sorted(df_ps[col_customer].dropna().astype(str).unique().tolist())
-                        sel_c = st.multiselect("Filtra per Ragione Sociale Cliente:", cust_in_selection, placeholder="Tutti i clienti del prodotto...")
-                        
                         if sel_c:
                             df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
 
+                        # Aggregazione
                         cb = df_ps.groupby([col_customer, col_prod]).agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'}).reset_index().sort_values(col_euro, ascending=False)
+                        
+                        # --- MODIFICA V30.1: CALCOLO PREZZI MEDI ---
+                        # Gestione divisione per zero con numpy
+                        cb['Valore Medio €/Kg'] = np.where(cb[col_kg] > 0, cb[col_euro] / cb[col_kg], 0)
+                        cb['Valore Medio €/CT'] = np.where(cb[col_cartons] > 0, cb[col_euro] / cb[col_cartons], 0)
+
                         st.dataframe(
                             cb, 
                             column_config={
@@ -381,7 +386,10 @@ if page == "📊 Vendite & Fatturazione":
                                 col_prod: st.column_config.TextColumn("🏷️ Prodotto", width="medium"),
                                 col_cartons: st.column_config.NumberColumn("📦 CT", format="%d"), 
                                 col_kg: st.column_config.NumberColumn("⚖️ Kg", format="%d"), 
-                                col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f")
+                                col_euro: st.column_config.NumberColumn("💰 Valore", format="€ %.2f"),
+                                # Nuove Colonne
+                                'Valore Medio €/Kg': st.column_config.NumberColumn("Prezzo €/Kg", format="€ %.2f"),
+                                'Valore Medio €/CT': st.column_config.NumberColumn("Prezzo €/CT", format="€ %.2f"),
                             }, 
                             hide_index=True, use_container_width=True, height=450
                         )
@@ -525,49 +533,52 @@ elif page == "🎁 Analisi Customer Promo":
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
             
-            f1, f2, f3, f4 = st.columns(4)
-            df_display = df_pglobal.copy()
-            
-            with f1:
-                if p_cust in df_display.columns:
-                    c_list = sorted(df_display[p_cust].dropna().astype(str).unique())
+            # --- MODIFICA V30.1: FORM ANCHE PER PROMO PER STABILITÀ ---
+            with st.form("promo_detail_form"):
+                st.caption("Seleziona i filtri e premi 'Aggiorna Tabella' per applicare.")
+                f1, f2, f3, f4 = st.columns(4)
+                
+                with f1:
+                    c_list = sorted(df_pglobal[p_cust].dropna().astype(str).unique()) if p_cust in df_pglobal.columns else []
                     sel_tc = st.multiselect("👤 Cliente", c_list, placeholder="Tutti...")
-                    if sel_tc: df_display = df_display[df_display[p_cust].astype(str).isin(sel_tc)]
-            
-            with f2:
-                if p_prod in df_display.columns:
-                    p_list = sorted(df_display[p_prod].dropna().astype(str).unique())
+                
+                with f2:
+                    p_list = sorted(df_pglobal[p_prod].dropna().astype(str).unique()) if p_prod in df_pglobal.columns else []
                     sel_tp = st.multiselect("🏷️ Prodotto", p_list, placeholder="Tutti...")
-                    if sel_tp: df_display = df_display[df_display[p_prod].astype(str).isin(sel_tp)]
-            
-            with f3:
-                if 'Sconto promo' in df_display.columns:
-                    s_list = sorted(df_display['Sconto promo'].dropna().astype(str).unique())
+                
+                with f3:
+                    s_list = sorted(df_pglobal['Sconto promo'].dropna().astype(str).unique()) if 'Sconto promo' in df_pglobal.columns else []
                     sel_ts = st.multiselect("📉 Sconto promo", s_list, placeholder="Tutti...")
-                    if sel_ts: df_display = df_display[df_display['Sconto promo'].astype(str).isin(sel_ts)]
-            
-            with f4:
-                if p_week in df_display.columns:
-                    w_list = sorted(df_display[p_week].dropna().astype(str).unique())
+                
+                with f4:
+                    w_list = sorted(df_pglobal[p_week].dropna().astype(str).unique()) if p_week in df_pglobal.columns else []
                     sel_tw = st.multiselect("📅 Week start", w_list, placeholder="Tutte...")
-                    if sel_tw: df_display = df_display[df_display[p_week].astype(str).isin(sel_tw)]
+                
+                submit_promo = st.form_submit_button("🔄 Aggiorna Tabella")
 
-            cols_to_show = [c for c in [guesses_p['promo_id'], promo_desc_col, p_cust, p_prod, p_start, p_week, p_qty_f, p_qty_a, 'Sconto promo'] if c in df_display.columns]
-            
-            if p_qty_a in df_display.columns:
-                df_display_sorted = df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
-            else:
-                df_display_sorted = df_display[cols_to_show]
+            if submit_promo:
+                df_display = df_pglobal.copy()
+                if sel_tc: df_display = df_display[df_display[p_cust].astype(str).isin(sel_tc)]
+                if sel_tp: df_display = df_display[df_display[p_prod].astype(str).isin(sel_tp)]
+                if sel_ts: df_display = df_display[df_display['Sconto promo'].astype(str).isin(sel_ts)]
+                if sel_tw: df_display = df_display[df_display[p_week].astype(str).isin(sel_tw)]
 
-            st.dataframe(
-                df_display_sorted,
-                column_config={
-                    p_qty_f: st.column_config.NumberColumn("Forecast Qty", format="%.0f"),
-                    p_qty_a: st.column_config.NumberColumn("Actual Qty", format="%.0f"),
-                    p_start: st.column_config.DateColumn("Inizio Sell-In", format="DD/MM/YYYY")
-                },
-                hide_index=True, use_container_width=True, height=500
-            )
+                cols_to_show = [c for c in [guesses_p['promo_id'], promo_desc_col, p_cust, p_prod, p_start, p_week, p_qty_f, p_qty_a, 'Sconto promo'] if c in df_display.columns]
+                
+                if p_qty_a in df_display.columns:
+                    df_display_sorted = df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
+                else:
+                    df_display_sorted = df_display[cols_to_show]
+
+                st.dataframe(
+                    df_display_sorted,
+                    column_config={
+                        p_qty_f: st.column_config.NumberColumn("Forecast Qty", format="%.0f"),
+                        p_qty_a: st.column_config.NumberColumn("Actual Qty", format="%.0f"),
+                        p_start: st.column_config.DateColumn("Inizio Sell-In", format="DD/MM/YYYY")
+                    },
+                    hide_index=True, use_container_width=True, height=500
+                )
 
         else:
             st.warning("Nessuna promozione trovata per i filtri selezionati.")
