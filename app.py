@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (v36.1 - Added Metrics to Detail) ---
+# --- 1. CONFIGURAZIONE & STILE (v37.0 - Promo Analysis & Stability) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v36.1",
+    page_title="EITA Analytics Pro v37.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -180,8 +180,9 @@ def convert_df_to_excel(df):
 def smart_analyze_and_clean(df_in, page_type="Sales"):
     df = df_in.copy()
     if page_type == "Sales":
-        target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto']
-        protected_text_cols = ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Descr_Articolo', 'Entity', 'Ragione Sociale']
+        # Aggiunti Sconto7 e Sconto4 per gestione promo
+        target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto', 'Sconto7_Promozionali', 'Sconto4_Free']
+        protected_text_cols = ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Descr_Articolo', 'Entity', 'Ragione Sociale', 'Decr_Cliente_Fat']
     elif page_type == "Promo":
         target_numeric_cols = ['Quantità prevista', 'Quantità ordinata', 'Importo sconto', 'Sconto promo']
         protected_text_cols = ['Descrizione Cliente', 'Descrizione Prodotto', 'Descrizione Promozione', 'Riferimento', 'Tipo promo', 'Codice prodotto', 'Key Account', 'Decr_Cliente_Fat', 'Week start']
@@ -206,7 +207,6 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
                 pass
         is_target_numeric = any(t in col for t in target_numeric_cols)
 
-        # FIX #5: Euristica looks_numeric più conservativa.
         if not is_target_numeric:
             numeric_like_count = sum(
                 1 for s in sample
@@ -264,18 +264,12 @@ def guess_column_role(df, page_type="Sales"):
     return guesses
 
 
-# FIX #2: set_idx definita UNA SOLA VOLTA a livello modulo.
 def set_idx(guess, options):
     """Helper: ritorna l'indice di guess in options, oppure 0."""
     return options.index(guess) if guess in options else 0
 
 
-# FIX #3: Helper per il date_input con unpacking sicuro.
 def safe_date_input(label, default_start, default_end, key=None):
-    """
-    Wrapper per st.sidebar.date_input che gestisce la selezione
-    di un singolo giorno restituendo (start, start) in quel caso.
-    """
     date_range = st.sidebar.date_input(
         label, [default_start, default_end],
         format="DD/MM/YYYY",
@@ -349,7 +343,6 @@ if page == "📊 Vendite & Fatturazione":
         if col_data and pd.api.types.is_datetime64_any_dtype(df_global[col_data]):
             def_start = datetime.date(2026, 1, 1)
             def_end   = datetime.date(2026, 1, 31)
-            # FIX #3: uso safe_date_input
             d_start, d_end = safe_date_input(
                 "Periodo di Analisi", def_start, def_end, key="sales_date"
             )
@@ -358,17 +351,28 @@ if page == "📊 Vendite & Fatturazione":
                 (df_global[col_data].dt.date <= d_end)
             ]
 
+        # FIX STABILITÀ FILTRI: Wrap in st.form
         st.sidebar.markdown("### 🎛️ Filtri Avanzati")
         possible_filters = [
             c for c in all_cols
             if c not in [col_euro, col_kg, col_cartons, col_data, col_entity]
         ]
-        filters_selected = st.sidebar.multiselect("Aggiungi filtri (es. Vettore, Regione):", possible_filters)
-        for f_col in filters_selected:
-            unique_vals = sorted(df_global[f_col].astype(str).unique())
-            sel_vals = st.sidebar.multiselect(f"Seleziona in {f_col}", unique_vals)
-            if sel_vals:
-                df_global = df_global[df_global[f_col].astype(str).isin(sel_vals)]
+        
+        with st.sidebar.form("advanced_filters_form"):
+            filters_selected = st.multiselect("Aggiungi filtri (es. Vettore, Regione):", possible_filters)
+            active_filters = {}
+            for f_col in filters_selected:
+                unique_vals = sorted(df_processed[f_col].astype(str).unique()) # Use df_processed to populate list
+                sel_vals = st.multiselect(f"Seleziona in {f_col}", unique_vals)
+                if sel_vals:
+                    active_filters[f_col] = sel_vals
+            
+            apply_filters = st.form_submit_button("✅ Applica Filtri Avanzati")
+
+        # Applicazione filtri fuori dal form
+        if active_filters:
+            for f_col, vals in active_filters.items():
+                df_global = df_global[df_global[f_col].astype(str).isin(vals)]
 
         st.title(f"Performance Overview: {sel_ent if sel_ent else 'Global'}")
 
@@ -636,15 +640,13 @@ if page == "📊 Vendite & Fatturazione":
                         .reset_index()
                         .sort_values(col_euro, ascending=False)
                     )
-                    # --- ADDED METRICS HERE (v36.1) ---
                     ps['Valore Medio €/Kg'] = np.where(
                         ps[col_kg] > 0, ps[col_euro] / ps[col_kg], 0
                     )
                     ps['Valore Medio €/CT'] = np.where(
                         ps[col_cartons] > 0, ps[col_euro] / ps[col_cartons], 0
                     )
-                    # ----------------------------------
-
+                    
                     st.dataframe(
                         ps,
                         column_config={
@@ -671,8 +673,9 @@ if page == "📊 Vendite & Fatturazione":
 # =====================================================================
 elif page == "🎁 Analisi Customer Promo":
     st.title("🎁 Analisi Customer Promo")
+    
+    # 1. Carica file PROMO (Existing)
     df_promo_processed = None
-
     if files:
         file_map      = {f['name']: f for f in files}
         target_file_p = "Customer_Promo"
@@ -688,6 +691,20 @@ elif page == "🎁 Analisi Customer Promo":
             )
             if df_promo_raw is not None:
                 df_promo_processed = smart_analyze_and_clean(df_promo_raw, "Promo")
+
+    # 2. Carica file VENDITE (New Requirement)
+    df_sales_for_promo = None
+    if files:
+        target_file_s = "From_Order_to_Invoice"
+        file_list_s   = list(file_map.keys())
+        # Cerchiamo automaticamente il file vendite
+        sales_file_key = next((f for f in file_list_s if target_file_s.lower() in f.lower()), None)
+        
+        if sales_file_key:
+            with st.spinner('Integrazione dati di vendita per analisi Promo...'):
+                 df_sales_raw = load_dataset(file_map[sales_file_key]['id'], file_map[sales_file_key]['modifiedTime'])
+                 if df_sales_raw is not None:
+                     df_sales_for_promo = smart_analyze_and_clean(df_sales_raw, "Sales")
 
     if df_promo_processed is not None:
         guesses_p  = guess_column_role(df_promo_processed, "Promo")
@@ -707,6 +724,7 @@ elif page == "🎁 Analisi Customer Promo":
         st.sidebar.markdown("### 🔍 Filtri Promo Rapidi")
         df_pglobal = df_promo_processed.copy()
 
+        # ... Existing Filters logic ...
         if p_div in df_pglobal.columns:
             divs    = sorted(df_pglobal[p_div].dropna().unique().tolist())
             idx_div = divs.index(21) if 21 in divs else (divs.index('21') if '21' in divs else 0)
@@ -725,26 +743,35 @@ elif page == "🎁 Analisi Customer Promo":
                     (df_pglobal[p_start].dt.date <= d_end)
                 ]
 
+        # Wrap Advanced Filters in Form for Stability
         st.sidebar.markdown("### 🎛️ Filtri Avanzati Promo")
-
-        if p_status in df_pglobal.columns:
-            stati         = sorted(df_pglobal[p_status].dropna().unique().tolist())
-            default_stati = [20] if 20 in stati else ([str(20)] if str(20) in stati else stati)
-            sel_stati     = st.sidebar.multiselect("Stato Promozione", stati, default=default_stati)
-            if sel_stati:
-                df_pglobal = df_pglobal[df_pglobal[p_status].isin(sel_stati)]
-
-        possible_filters_p = [
-            c for c in all_cols_p if c not in [p_qty_f, p_qty_a, p_start, p_div, p_status]
-        ]
-        filters_selected_p = st.sidebar.multiselect(
-            "Aggiungi altri filtri (es. Key Account, Gerarchia):", possible_filters_p
-        )
-        for f_col in filters_selected_p:
-            unique_vals = sorted(df_pglobal[f_col].dropna().astype(str).unique())
-            sel_vals    = st.sidebar.multiselect(f"Seleziona {f_col}", unique_vals)
-            if sel_vals:
-                df_pglobal = df_pglobal[df_pglobal[f_col].astype(str).isin(sel_vals)]
+        
+        with st.sidebar.form("promo_advanced_filters"):
+            if p_status in df_pglobal.columns:
+                stati         = sorted(df_pglobal[p_status].dropna().unique().tolist())
+                default_stati = [20] if 20 in stati else ([str(20)] if str(20) in stati else stati)
+                sel_stati     = st.multiselect("Stato Promozione", stati, default=default_stati)
+            else:
+                sel_stati = []
+            
+            possible_filters_p = [c for c in all_cols_p if c not in [p_qty_f, p_qty_a, p_start, p_div, p_status]]
+            filters_selected_p = st.multiselect("Aggiungi altri filtri:", possible_filters_p)
+            
+            active_filters_p = {}
+            for f_col in filters_selected_p:
+                unique_vals = sorted(df_promo_processed[f_col].dropna().astype(str).unique())
+                sel_vals    = st.multiselect(f"Seleziona {f_col}", unique_vals)
+                if sel_vals:
+                    active_filters_p[f_col] = sel_vals
+            
+            apply_promo_filters = st.form_submit_button("✅ Applica Filtri Promo")
+        
+        # Apply Filters logic
+        if apply_promo_filters or sel_stati:
+             if p_status in df_pglobal.columns and sel_stati:
+                 df_pglobal = df_pglobal[df_pglobal[p_status].isin(sel_stati)]
+             for f_col, vals in active_filters_p.items():
+                 df_pglobal = df_pglobal[df_pglobal[f_col].astype(str).isin(vals)]
 
         if not df_pglobal.empty:
             tot_promo_uniche = (
@@ -785,28 +812,90 @@ elif page == "🎁 Analisi Customer Promo":
 
             col_pl, col_pr = st.columns([1, 1], gap="large")
 
+            # --- LEFT COLUMN: NEW CHART (Real Sales Promo vs Normal) ---
             with col_pl:
-                st.subheader("Performance per Tipo Promo")
-                if p_type in df_pglobal.columns:
-                    type_agg = df_pglobal.groupby(p_type).agg({p_qty_f: 'sum', p_qty_a: 'sum'}).reset_index()
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        x=type_agg[p_type], y=type_agg[p_qty_f], name='Forecast (Previsto)',
-                        marker=dict(color='#89CFF0', line=dict(color='rgba(255,255,255,0.8)', width=1.5))
-                    ))
-                    fig.add_trace(go.Bar(
-                        x=type_agg[p_type], y=type_agg[p_qty_a], name='Actual (Ordinato)',
-                        marker=dict(color='#004e92', line=dict(color='rgba(0,0,0,0.5)', width=1.5))
-                    ))
-                    fig.update_layout(
-                        barmode='group', height=450,
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                st.subheader("📊 Vendite: Promo vs Normale")
+                if df_sales_for_promo is not None:
+                    # Logic for Promo vs Normal
+                    df_s = df_sales_for_promo.copy()
+                    
+                    # Ensure numeric columns needed
+                    col_s7 = 'Sconto7_Promozionali'
+                    col_s4 = 'Sconto4_Free'
+                    col_kg_s = 'Peso_Netto_TotRiga'
+                    col_ct_s = 'Qta_Cartoni_Ordinato'
+                    col_art = 'Descr_Articolo'
+                    col_cli = 'Decr_Cliente_Fat'
+                    
+                    if all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
+                        # Filters for this chart
+                        with st.form("promo_sales_chart_filter"):
+                            st.caption("Filtra Dati Vendite per Grafico Promo")
+                            all_prods = sorted(df_s[col_art].dropna().astype(str).unique())
+                            all_custs = sorted(df_s[col_cli].dropna().astype(str).unique())
+                            
+                            sel_prod_chart = st.multiselect("Filtra Articolo", all_prods, placeholder="Tutti...")
+                            sel_cust_chart = st.multiselect("Filtra Cliente", all_custs, placeholder="Tutti...")
+                            
+                            apply_chart_filters = st.form_submit_button("Aggiorna Grafico")
+                        
+                        if apply_chart_filters:
+                            if sel_prod_chart: df_s = df_s[df_s[col_art].astype(str).isin(sel_prod_chart)]
+                            if sel_cust_chart: df_s = df_s[df_s[col_cli].astype(str).isin(sel_cust_chart)]
+                        
+                        # Logic: Promo if S7 != 0 or S4 != 0
+                        df_s['Tipo Vendita'] = np.where(
+                            (df_s[col_s7] != 0) | (df_s[col_s4] != 0), 
+                            'In Promozione', 
+                            'Vendita Normale'
+                        )
+                        
+                        # Aggregation
+                        promo_stats = df_s.groupby('Tipo Vendita').agg({
+                            col_kg_s: 'sum',
+                            col_ct_s: 'sum'
+                        }).reset_index()
+                        
+                        total_kg = promo_stats[col_kg_s].sum()
+                        
+                        if not promo_stats.empty:
+                            fig_p = px.pie(
+                                promo_stats, 
+                                values=col_kg_s, 
+                                names='Tipo Vendita',
+                                hole=0.4,
+                                color='Tipo Vendita',
+                                color_discrete_map={'In Promozione': '#FF6B6B', 'Vendita Normale': '#4ECDC4'}
+                            )
+                            fig_p.update_traces(textposition='inside', textinfo='percent+label')
+                            fig_p.update_layout(showlegend=True, margin=dict(l=20,r=20,t=20,b=20))
+                            st.plotly_chart(fig_p, use_container_width=True)
+                            
+                            # Metrics Display
+                            st.markdown("#### 📉 Dettaglio Metriche")
+                            p_row = promo_stats[promo_stats['Tipo Vendita']=='In Promozione']
+                            
+                            if not p_row.empty:
+                                p_kg = p_row[col_kg_s].values[0]
+                                p_ct = p_row[col_ct_s].values[0]
+                                p_share = (p_kg / total_kg * 100) if total_kg > 0 else 0
+                                
+                                m1, m2, m3 = st.columns(3)
+                                m1.metric("% su Totale (Kg)", f"{p_share:.1f}%")
+                                m2.metric("Kg Promo", f"{p_kg:,.0f}")
+                                m3.metric("Cartoni Promo", f"{p_ct:,.0f}")
+                            else:
+                                st.info("Nessuna vendita in promozione trovata con i filtri correnti.")
+                        else:
+                            st.warning("Nessun dato trovato.")
+                    else:
+                        st.error("Colonne Sconto/Peso mancanti nel file Vendite.")
+                else:
+                    st.warning("File Vendite ('From_Order_to_Invoice') non trovato per l'analisi incrociata.")
 
+            # --- RIGHT COLUMN: Top Promos (Existing) ---
             with col_pr:
-                st.subheader("Top Promozioni (per Volume)")
+                st.subheader("Top Promozioni (per Volume Forecast vs Actual)")
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
                 if promo_desc_col in df_pglobal.columns:
                     top_promos = (
