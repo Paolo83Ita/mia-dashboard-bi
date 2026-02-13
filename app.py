@@ -12,10 +12,10 @@ import json
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v46.0 - Filtri multiselect, Mostra colonne, Tooltip, AI anti-allucinazioni, Grafici 3D premium)
+# 1. CONFIGURAZIONE & STILE (v47.0 - KPI fix, Pie senza overlap, AI retry+quota, token ridotti)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v46.0",
+    page_title="EITA Analytics Pro v47.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -71,9 +71,8 @@ st.markdown("""
   .kpi-title    { font-size:0.82rem; font-weight:700; text-transform:uppercase;
                   letter-spacing:1.2px; opacity:0.7; margin-bottom:0.5rem; }
   .kpi-value    { font-size:1.9rem; font-weight:800; line-height:1.2;
-                  background:linear-gradient(135deg,#e0e8ff,#ffffff);
-                  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-                  background-clip:text; }
+                  color:#ffffff !important;
+                  text-shadow: 0 2px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.5); }
   .kpi-subtitle { font-size:0.76rem; opacity:0.55; margin-top:0.35rem; }
 
   /* ---- CHARTS ---- */
@@ -617,34 +616,45 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # Costruisce contesto dati: stats complete + campione stratificato
+        # -------------------------------------------------------
+        # Costruisce contesto COMPATTO per minimizzare i token:
+        # - NO CSV raw → solo statistiche aggregate
+        # - Max 30 righe di esempio per colonne categoriche
+        # - Aggregazioni chiave precalcolate
+        # -------------------------------------------------------
         context_text = ""
         if context_df is not None and not context_df.empty:
-            try:
-                stats_str = context_df.describe(include="all").to_string()
-            except Exception:
-                stats_str = "Statistiche non disponibili"
             n_total = len(context_df)
-            if n_total <= 300:
-                sample_df = context_df
-            else:
-                top_half  = context_df.head(150)
-                rand_half = context_df.iloc[150:].sample(
-                    n=min(150, n_total - 150), random_state=42
-                )
-                sample_df = pd.concat([top_half, rand_half], ignore_index=True)
+            cols    = context_df.columns.tolist()
+
+            # Statistiche numeriche (describe compatto)
+            num_cols = context_df.select_dtypes(include='number').columns.tolist()
+            cat_cols = context_df.select_dtypes(exclude='number').columns.tolist()
+
+            num_stats = ""
+            if num_cols:
+                try:
+                    ds = context_df[num_cols].describe().round(2)
+                    num_stats = ds.to_string()
+                except Exception:
+                    num_stats = "N/D"
+
+            # Per colonne categoriche: top 10 valori + conteggio
+            cat_summary_lines = []
+            for c in cat_cols[:8]:   # max 8 colonne cat
+                try:
+                    vc = context_df[c].value_counts().head(10)
+                    cat_summary_lines.append(f"{c}: {dict(vc)}")
+                except Exception:
+                    pass
+            cat_summary = "\n".join(cat_summary_lines)
 
             context_text = (
-                "\n\n=== CONTESTO DATI: " + context_label + " ===\n"
-                + f"Totale righe nel dataset filtrato: {n_total}\n"
-                + f"Righe nel campione inviato: {len(sample_df)}"
-                + (" (ATTENZIONE: campione parziale, segnalalo nella risposta)" if n_total > 300 else "") + "\n"
-                + f"Colonne ({len(context_df.columns)}): {', '.join(context_df.columns.tolist())}\n\n"
-                + "--- STATISTICHE DESCRITTIVE (calcolate sull'intero dataset) ---\n"
-                + stats_str + "\n\n"
-                + "--- DATI CAMPIONE (CSV) ---\n"
-                + sample_df.to_csv(index=False)
-                + "\n=== FINE CONTESTO ===\n"
+                f"\n\n=== DATI: {context_label} ({n_total} righe) ===\n"
+                f"Colonne: {', '.join(cols)}\n\n"
+                f"STATISTICHE NUMERICHE:\n{num_stats}\n\n"
+                f"TOP VALORI CATEGORICI:\n{cat_summary}\n"
+                f"=== FINE CONTESTO ===\n"
             )
 
         history = [
@@ -652,19 +662,52 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             for m in st.session_state["ai_chat_history"]
         ]
 
-        with st.sidebar:
-            with st.spinner("🤖 Elaborazione..."):
+        import time
+
+        def _call_gemini_with_retry(model, history, prompt, max_retries=2):
+            """Chiama Gemini con retry automatico su 429. Se esaurisce i retry
+            suggerisce all'utente di aspettare o di ridurre i dati."""
+            for attempt in range(max_retries + 1):
                 try:
                     chat     = model.start_chat(history=history)
-                    response = chat.send_message(user_input + context_text)
-                    answer   = response.text
+                    response = chat.send_message(prompt)
+                    return response.text, None
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str and attempt < max_retries:
+                        # Estrai i secondi di attesa dall'errore se presenti
+                        wait_s = 15
+                        import re
+                        m_wait = re.search(r'retry in (\d+)', err_str)
+                        if m_wait:
+                            wait_s = min(int(m_wait.group(1)), 30)
+                        time.sleep(wait_s)
+                        continue
+                    return None, err_str
+            return None, "Quota esaurita dopo i retry."
 
+        with st.sidebar:
+            with st.spinner("🤖 Elaborazione..."):
+                answer, err_msg = _call_gemini_with_retry(
+                    model, history, user_input + context_text
+                )
+                if answer:
                     st.session_state["ai_chat_history"].append({"role": "user",  "text": user_input})
                     st.session_state["ai_chat_history"].append({"role": "model", "text": answer})
                     st.rerun()
-
-                except Exception as e:
-                    st.sidebar.error(f"Errore Gemini: {e}")
+                else:
+                    if "429" in (err_msg or ""):
+                        st.sidebar.warning(
+                            "⚠️ **Quota API Gemini esaurita.**\n\n"
+                            "Sei sul piano gratuito (limite: 15 req/min, 1M token/giorno).\n\n"
+                            "**Soluzioni:**\n"
+                            "1. Attendi 1 minuto e riprova\n"
+                            "2. Vai su [Google AI Studio](https://aistudio.google.com) → Billing → abilita piano a pagamento (0,10$/1M token)\n"
+                            "3. Filtra i dati a meno righe prima di chiedere\n"
+                            "4. Scrivi una domanda più breve"
+                        )
+                    else:
+                        st.sidebar.error(f"Errore Gemini: {err_msg}")
 
 
 # ==========================================================================
@@ -887,7 +930,7 @@ if page == "📊 Vendite & Fatturazione":
                             ),
                             text=prod_agg[col_euro].apply(lambda v: f"€ {v:,.0f}"),
                             textposition='inside', insidetextanchor='middle',
-                            textfont=dict(size=11, color="white", family="Arial Black"),
+                            textfont=dict(size=12, color="white", family="Arial Black"),
                             hovertemplate="<b>%{y}</b><br>💰 Fatturato: € %{x:,.2f}<extra></extra>"
                         ))
                         fig.update_layout(
@@ -903,37 +946,70 @@ if page == "📊 Vendite & Fatturazione":
                             showlegend=False,
                         )
                     else:
-                        hole_size  = 0.45 if "Donut" in chart_type else 0
-                        pull_array = [0.15] + [0.03] * (len(prod_agg) - 1)
-                        # Palette premium con gradiente
-                        palette    = [
+                        hole_size  = 0.48 if "Donut" in chart_type else 0
+                        # Pull progressivo: primo slice estratto, altri leggermente
+                        n_slices   = len(prod_agg)
+                        pull_array = [0.12] + [0.02] * (n_slices - 1)
+                        palette = [
                             "#0072ff","#00c6ff","#43e97b","#ff6b9d",
                             "#f7971e","#9b59b6","#1abc9c","#e74c3c",
                             "#3498db","#f39c12"
-                        ]
+                        ][:n_slices]
+
                         fig = go.Figure(go.Pie(
-                            labels=prod_agg[col_prod], values=prod_agg[col_euro],
-                            hole=hole_size, pull=pull_array,
+                            labels=prod_agg[col_prod],
+                            values=prod_agg[col_euro],
+                            hole=hole_size,
+                            pull=pull_array,
                             marker=dict(
-                                colors=palette[:len(prod_agg)],
-                                line=dict(color='rgba(255,255,255,0.7)', width=2.5),
+                                colors=palette,
+                                # Bordo bianco spesso simula effetto 3D/depth
+                                line=dict(color='rgba(255,255,255,0.85)', width=3),
                             ),
-                            textinfo='percent+label', textposition='auto',
-                            textfont=dict(size=11, family="Arial"),
-                            hovertemplate="<b>%{label}</b><br>💰 € %{value:,.2f}<br>📊 %{percent}<extra></extra>",
-                            rotation=15,
+                            # Solo percentuale sul grafico → nessuna sovrapposizione label
+                            textinfo='percent',
+                            textposition='inside',
+                            textfont=dict(size=12, color='white', family='Arial Black'),
+                            insidetextorientation='horizontal',
+                            hovertemplate=(
+                                "<b>%{label}</b><br>"
+                                "💰 € %{value:,.2f}<br>"
+                                "📊 %{percent}<extra></extra>"
+                            ),
+                            rotation=25,
+                            # Leggenda con valore a fianco — NON label sul grafico
+                            customdata=prod_agg[col_prod],
                         ))
+
                         if "Donut" in chart_type:
-                            fig.add_annotation(
-                                text=f"€ {prod_agg[col_euro].sum()/1e6:.1f}M" if prod_agg[col_euro].sum() > 1e6
-                                     else f"€ {prod_agg[col_euro].sum():,.0f}",
-                                x=0.5, y=0.5, xref="paper", yref="paper",
-                                showarrow=False, font=dict(size=14, color="white", family="Arial Black"),
+                            total_val = prod_agg[col_euro].sum()
+                            center_txt = (
+                                f"€ {total_val/1e6:.1f}M" if total_val >= 1e6
+                                else f"€ {total_val/1e3:.0f}K" if total_val >= 1e3
+                                else f"€ {total_val:,.0f}"
                             )
+                            fig.add_annotation(
+                                text=f"<b>{center_txt}</b>",
+                                x=0.5, y=0.5, xref="paper", yref="paper",
+                                showarrow=False,
+                                font=dict(size=16, color="white", family="Arial Black"),
+                                bgcolor="rgba(0,0,0,0)",
+                            )
+
                         fig.update_layout(
-                            height=460, margin=dict(l=20, r=20, t=20, b=20),
+                            height=480,
+                            # Margine sinistro ampio → spazio per legenda verticale
+                            margin=dict(l=10, r=180, t=30, b=10),
                             showlegend=True,
-                            legend=dict(orientation="v", x=1.0, y=0.5, font=dict(size=10)),
+                            legend=dict(
+                                orientation="v",
+                                x=1.02, y=0.5,
+                                xanchor="left",
+                                font=dict(size=10),
+                                itemsizing="constant",
+                                # Tronca label lunghe nella legenda
+                                tracegroupgap=4,
+                            ),
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
                     st.plotly_chart(fig, use_container_width=True)
