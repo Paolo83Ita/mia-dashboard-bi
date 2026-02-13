@@ -12,10 +12,10 @@ import json
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v44.0 - Fix json import, AI context ottimizzato)
+# 1. CONFIGURAZIONE & STILE (v45.0 - KPI fix colonna esistente, Periodo Analisi acquisti)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v44.0",
+    page_title="EITA Analytics Pro v45.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1268,21 +1268,23 @@ elif page == "📦 Analisi Acquisti":
 
                 # LEGENDA: "Kg acquistati = costo della linea / prezzo €/kg"
                 # = Line amount / Purchase price
-                if 'Kg acquistati' not in df_purch_processed.columns:
-                    if all(c in df_purch_processed.columns for c in ['Line amount', 'Purchase price']):
-                        df_purch_processed['Kg acquistati'] = np.where(
-                            df_purch_processed['Purchase price'] > 0,
-                            df_purch_processed['Line amount'] / df_purch_processed['Purchase price'],
-                            0
-                        )
-                    elif all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
-                        df_purch_processed['Kg acquistati'] = np.where(
-                            df_purch_processed['Purchase price'] > 0,
-                            df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
-                            0
-                        )
-                    else:
-                        df_purch_processed['Kg acquistati'] = 0
+                # FIX: SEMPRE ricalcola — la colonna esiste già nel file
+                # Excel ma può avere valori zero o sbagliati.
+                # Non usare il guard "if not in columns".
+                if all(c in df_purch_processed.columns for c in ['Line amount', 'Purchase price']):
+                    df_purch_processed['Kg acquistati'] = np.where(
+                        df_purch_processed['Purchase price'] > 0,
+                        df_purch_processed['Line amount'] / df_purch_processed['Purchase price'],
+                        0
+                    )
+                elif all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
+                    df_purch_processed['Kg acquistati'] = np.where(
+                        df_purch_processed['Purchase price'] > 0,
+                        df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
+                        0
+                    )
+                else:
+                    df_purch_processed['Kg acquistati'] = 0
     else:
         st.error("Nessun file trovato.")
 
@@ -1331,30 +1333,36 @@ elif page == "📦 Analisi Acquisti":
         else:
             sel_div_pu = None
 
-        # --- NUOVO: Periodo di Analisi (come nelle altre pagine) ---
-        if pu_date in df_pu_global.columns and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
-            _min_d = df_pu_global[pu_date].min()
-            _max_d = df_pu_global[pu_date].max()
-            if pd.notnull(_min_d) and pd.notnull(_max_d):
-                # Usa date salvate se disponibili, altrimenti min/max del dataset
-                saved_start = pu_saved.get("d_start_pu")
-                saved_end   = pu_saved.get("d_end_pu")
-                def_start   = datetime.date.fromisoformat(saved_start) if saved_start else _min_d.date()
-                def_end     = datetime.date.fromisoformat(saved_end)   if saved_end   else _max_d.date()
-                # Clamp alle date disponibili nel dataset corrente
-                def_start = max(def_start, _min_d.date())
-                def_end   = min(def_end,   _max_d.date())
-                d_start_pu, d_end_pu = safe_date_input(
-                    "Periodo di Analisi", def_start, def_end, key="purch_date"
+        # --- Periodo di Analisi ---
+        # FIX: converte la colonna data se non è già datetime,
+        # poi mostra il filtro (identico alla Pagina Vendite).
+        d_start_pu = d_end_pu = None
+        if pu_date in df_pu_global.columns:
+            # Forza conversione datetime se necessario
+            if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
+                df_pu_global[pu_date] = pd.to_datetime(
+                    df_pu_global[pu_date], dayfirst=True, errors='coerce'
                 )
-                df_pu_global = df_pu_global[
-                    (df_pu_global[pu_date].dt.date >= d_start_pu) &
-                    (df_pu_global[pu_date].dt.date <= d_end_pu)
-                ]
-            else:
-                d_start_pu = d_end_pu = None
-        else:
-            d_start_pu = d_end_pu = None
+            # Rimuovi NaT
+            df_pu_global = df_pu_global.dropna(subset=[pu_date])
+
+            if pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]) and not df_pu_global.empty:
+                _min_d = df_pu_global[pu_date].min()
+                _max_d = df_pu_global[pu_date].max()
+                if pd.notnull(_min_d) and pd.notnull(_max_d):
+                    saved_start = pu_saved.get("d_start_pu")
+                    saved_end   = pu_saved.get("d_end_pu")
+                    def_start   = datetime.date.fromisoformat(saved_start) if saved_start else _min_d.date()
+                    def_end     = datetime.date.fromisoformat(saved_end)   if saved_end   else _max_d.date()
+                    def_start   = max(def_start, _min_d.date())
+                    def_end     = min(def_end,   _max_d.date())
+                    d_start_pu, d_end_pu = safe_date_input(
+                        "Periodo di Analisi", def_start, def_end, key="purch_date"
+                    )
+                    df_pu_global = df_pu_global[
+                        (df_pu_global[pu_date].dt.date >= d_start_pu) &
+                        (df_pu_global[pu_date].dt.date <= d_end_pu)
+                    ]
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
