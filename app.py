@@ -11,10 +11,10 @@ import numpy as np
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v40.0 - Fix Google Drive Connection)
+# 1. CONFIGURAZIONE & STILE (v41.0 - Fix Gemini Model)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v40.0",
+    page_title="EITA Analytics Pro v41.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -422,7 +422,7 @@ def _get_gemini_client():
             return None, "Secret 'gemini_api_key' non trovato"
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-2.0-flash",
             system_instruction=(
                 "Sei un assistente dati esperto di business intelligence. "
                 "Aiuti l'utente a interpretare dati aziendali di vendita, promozioni e acquisti. "
