@@ -8,13 +8,14 @@ from googleapiclient.http import MediaIoBaseDownload
 import io
 import datetime
 import numpy as np
+import json
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v43.0 - Settings persistenti, KPI fix legenda, Date filter Acquisti)
+# 1. CONFIGURAZIONE & STILE (v44.0 - Fix json import, AI context ottimizzato)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v43.0",
+    page_title="EITA Analytics Pro v44.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -474,21 +475,37 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # Costruisce il contesto dati COMPLETO per Gemini (nessun limite di righe)
+        # Costruisce contesto dati ottimizzato per Gemini
+        # Strategia: statistiche complete + campione stratificato (max 300 righe)
+        # → risposta veloce senza perdere capacità di analisi
         context_text = ""
         if context_df is not None and not context_df.empty:
             try:
-                stats_str = context_df.describe(include='all').to_string()
+                stats_str = context_df.describe(include="all").to_string()
             except Exception:
                 stats_str = "Statistiche non disponibili"
+
+            # Campione stratificato: se il df ha più di 300 righe,
+            # prendi le prime 150 (ordine originale) + 150 random
+            n_total = len(context_df)
+            if n_total <= 300:
+                sample_df = context_df
+            else:
+                top_half = context_df.head(150)
+                rand_half = context_df.iloc[150:].sample(
+                    n=min(150, n_total - 150), random_state=42
+                )
+                sample_df = pd.concat([top_half, rand_half], ignore_index=True)
+
             context_text = (
                 "\n\n=== CONTESTO DATI: " + context_label + " ===\n"
-                + f"Totale righe: {len(context_df)} | "
+                + f"Dataset filtrato: {n_total} righe totali | "
+                + f"Campione inviato: {len(sample_df)} righe\n"
                 + f"Colonne ({len(context_df.columns)}): {', '.join(context_df.columns.tolist())}\n\n"
-                + "--- STATISTICHE DESCRITTIVE ---\n"
+                + "--- STATISTICHE DESCRITTIVE (su tutto il dataset) ---\n"
                 + stats_str + "\n\n"
-                + "--- DATI COMPLETI (CSV) ---\n"
-                + context_df.to_csv(index=False)
+                + "--- CAMPIONE DATI (CSV) ---\n"
+                + sample_df.to_csv(index=False)
                 + "\n=== FINE CONTESTO ===\n"
             )
 
