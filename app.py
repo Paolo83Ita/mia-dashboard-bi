@@ -11,10 +11,10 @@ import numpy as np
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v41.2 - Fixed Gemini Model to gemini-2.5-flash)
+# 1. CONFIGURAZIONE & STILE (v42.0 - KPI Fix + Detail Table + AI Full Context)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v41.2",
+    page_title="EITA Analytics Pro v42.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -474,18 +474,24 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # Costruisce il contesto dati se disponibile
+        # Costruisce il contesto dati completo per Gemini (nessun limite di righe)
         context_text = ""
         if context_df is not None and not context_df.empty:
-            # Invia max 50 righe per non sforare il context window
-            sample = context_df.head(50)
+            # Statistiche descrittive (sempre incluse — utili per domande aggregative)
+            try:
+                stats_str = context_df.describe(include='all').to_string()
+            except Exception:
+                stats_str = "Statistiche non disponibili"
+
             context_text = (
-                "\n\nCONTESTO DATI ATTUALI ("
-                + context_label
-                + f", prime {len(sample)} righe):\n"
-                + sample.to_csv(index=False)
-                + f"\nTotale righe nel dataset: {len(context_df)}\n"
-                + "Colonne: " + ", ".join(context_df.columns.tolist()) + "\n"
+                "\n\n=== CONTESTO DATI: " + context_label + " ===\n"
+                + f"Totale righe: {len(context_df)} | "
+                + f"Colonne ({len(context_df.columns)}): {', '.join(context_df.columns.tolist())}\n\n"
+                + "--- STATISTICHE DESCRITTIVE ---\n"
+                + stats_str + "\n\n"
+                + "--- DATI COMPLETI (CSV) ---\n"
+                + context_df.to_csv(index=False)
+                + "\n=== FINE CONTESTO ===\n"
             )
 
         # Ricostruisce la history per Gemini
@@ -1186,15 +1192,30 @@ elif page == "📦 Analisi Acquisti":
             if df_purch_raw is not None:
                 df_purch_processed = smart_analyze_and_clean(df_purch_raw, "Purchase")
 
-                if 'Kg acquistati' not in df_purch_processed.columns:
-                    if all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
-                        df_purch_processed['Kg acquistati'] = np.where(
-                            df_purch_processed['Purchase price'] > 0,
-                            df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
-                            0
-                        )
-                    else:
-                        df_purch_processed['Kg acquistati'] = 0
+                # FIX KPI: calcolo Kg acquistati corretto tramite colonne reali del file
+                # Priorità 1: Invoice quantity × Part net weight (colonne native del file acquisti)
+                # Priorità 2: Order quantity × Part net weight
+                # Fallback: Row amount / Purchase price (approssimazione precedente)
+                if ('Invoice quantity' in df_purch_processed.columns and
+                        'Part net weight' in df_purch_processed.columns):
+                    df_purch_processed['Kg acquistati'] = (
+                        df_purch_processed['Invoice quantity'].fillna(0) *
+                        df_purch_processed['Part net weight'].fillna(0)
+                    )
+                elif ('Order quantity' in df_purch_processed.columns and
+                        'Part net weight' in df_purch_processed.columns):
+                    df_purch_processed['Kg acquistati'] = (
+                        df_purch_processed['Order quantity'].fillna(0) *
+                        df_purch_processed['Part net weight'].fillna(0)
+                    )
+                elif all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
+                    df_purch_processed['Kg acquistati'] = np.where(
+                        df_purch_processed['Purchase price'] > 0,
+                        df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
+                        0
+                    )
+                else:
+                    df_purch_processed['Kg acquistati'] = 0
     else:
         st.error("Nessun file trovato.")
 
@@ -1308,26 +1329,119 @@ elif page == "📦 Analisi Acquisti":
                     st.plotly_chart(fig_supp, use_container_width=True)
 
             st.subheader("📋 Dettaglio Righe Acquisto")
-            cols_to_show  = [
-                'Purchase order', 'Purchase order date', 'Supplier name',
-                'Part description', 'Part group description',
-                'Order quantity', 'Received quantity', 'Invoice amount', 'Kg acquistati'
-            ]
-            cols_present  = [c for c in cols_to_show if c in df_pu_global.columns]
 
+            all_available_cols = df_pu_global.columns.tolist()
+
+            # --- Selettore colonne + ordinamento ---
+            ctrl1, ctrl2, ctrl3 = st.columns([3, 1.5, 1.2])
+            with ctrl1:
+                sel_display_cols = st.multiselect(
+                    "📌 Colonne da visualizzare:",
+                    options=["⭐ TUTTE"] + all_available_cols,
+                    default=["⭐ TUTTE"],
+                    key="pu_cols_select"
+                )
+                cols_to_display = (
+                    all_available_cols
+                    if not sel_display_cols or "⭐ TUTTE" in sel_display_cols
+                    else sel_display_cols
+                )
+            with ctrl2:
+                sort_col_pu = st.selectbox(
+                    "📊 Ordina per:",
+                    options=cols_to_display,
+                    key="pu_sort_col"
+                )
+            with ctrl3:
+                sort_dir_pu = st.radio(
+                    "Direzione:",
+                    ["⬆️ Cresc.", "⬇️ Decresc."],
+                    horizontal=False,
+                    key="pu_sort_dir"
+                )
+
+            # --- Filtri per colonna ---
+            with st.expander("🔍 Filtri per Colonna (singolo / multiplo)", expanded=False):
+                st.caption("Seleziona uno o più valori per colonna. 'Tutti' = nessun filtro attivo.")
+                df_detail_filtered = df_pu_global.copy()
+
+                # Raggruppa le colonne in righe da 4 per leggibilità
+                filter_cols_list = all_available_cols
+                num_filter_cols  = min(4, len(filter_cols_list))
+                rows_needed = (len(filter_cols_list) + num_filter_cols - 1) // num_filter_cols
+
+                for row_idx in range(rows_needed):
+                    fcols = st.columns(num_filter_cols)
+                    for col_idx in range(num_filter_cols):
+                        item_idx = row_idx * num_filter_cols + col_idx
+                        if item_idx >= len(filter_cols_list):
+                            break
+                        col_name = filter_cols_list[item_idx]
+                        with fcols[col_idx]:
+                            if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
+                                # Filtro data: range slider
+                                pass  # già filtrato dai filtri globali in sidebar
+                            elif pd.api.types.is_numeric_dtype(df_pu_global[col_name]):
+                                col_min = float(df_pu_global[col_name].min())
+                                col_max = float(df_pu_global[col_name].max())
+                                if col_min < col_max:
+                                    sel_range = st.slider(
+                                        f"{col_name}",
+                                        min_value=col_min, max_value=col_max,
+                                        value=(col_min, col_max),
+                                        key=f"pu_filter_num_{col_name}"
+                                    )
+                                    df_detail_filtered = df_detail_filtered[
+                                        (df_detail_filtered[col_name] >= sel_range[0]) &
+                                        (df_detail_filtered[col_name] <= sel_range[1])
+                                    ]
+                            else:
+                                unique_vals = sorted(
+                                    df_pu_global[col_name].dropna().astype(str).unique().tolist()
+                                )
+                                if len(unique_vals) <= 200:  # evita multiselect enormi
+                                    opts    = ["Tutti"] + unique_vals
+                                    sel_flt = st.multiselect(
+                                        f"{col_name}",
+                                        options=opts,
+                                        default=["Tutti"],
+                                        key=f"pu_filter_cat_{col_name}"
+                                    )
+                                    if sel_flt and "Tutti" not in sel_flt:
+                                        df_detail_filtered = df_detail_filtered[
+                                            df_detail_filtered[col_name].astype(str).isin(sel_flt)
+                                        ]
+
+            # --- Applica ordinamento e selezione colonne ---
+            sort_ascending = (sort_dir_pu == "⬆️ Cresc.")
+            if sort_col_pu and sort_col_pu in df_detail_filtered.columns:
+                df_detail_filtered = df_detail_filtered.sort_values(
+                    by=sort_col_pu, ascending=sort_ascending
+                )
+
+            cols_to_display = [c for c in cols_to_display if c in df_detail_filtered.columns]
+            df_final_detail  = df_detail_filtered[cols_to_display] if cols_to_display else df_detail_filtered
+
+            st.caption(f"Righe visualizzate: {len(df_final_detail):,} / {len(df_pu_global):,}")
             st.dataframe(
-                df_pu_global[cols_present],
+                df_final_detail,
                 column_config={
                     'Purchase order date': st.column_config.DateColumn("Data Ordine"),
                     'Invoice amount':      st.column_config.NumberColumn("Importo Fatt.", format="€ %.2f"),
                     'Kg acquistati':       st.column_config.NumberColumn("Kg Calc.",      format="%.0f"),
                     'Order quantity':      st.column_config.NumberColumn("Qta Ord.",       format="%.0f"),
+                    'Received quantity':   st.column_config.NumberColumn("Qta Ricevuta",   format="%.0f"),
+                    'Part net weight':     st.column_config.NumberColumn("Peso Netto",      format="%.4f"),
+                    'Purchase price':      st.column_config.NumberColumn("Prezzo Acq.",    format="€ %.4f"),
+                    'Row amount':          st.column_config.NumberColumn("Importo Riga",   format="€ %.2f"),
                 },
-                use_container_width=True, height=500
+                use_container_width=True,
+                height=500,
+                hide_index=True
             )
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
-                data=convert_df_to_excel(df_pu_global[cols_present]),
+                data=convert_df_to_excel(df_final_detail),
                 file_name=f"Report_Acquisti_{datetime.date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
