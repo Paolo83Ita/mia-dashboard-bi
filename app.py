@@ -9,9 +9,9 @@ import io
 import datetime
 import numpy as np
 
-# --- 1. CONFIGURAZIONE & STILE (v37.2 - Fix Cascading Filters) ---
+# --- 1. CONFIGURAZIONE & STILE (v38.1 - Fix Promo Chart Pre-Filter) ---
 st.set_page_config(
-    page_title="EITA Analytics Pro v37.2",
+    page_title="EITA Analytics Pro v38.1",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -78,7 +78,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================================================
-# FIX #1: Google API Service separato con @st.cache_resource
+# GOOGLE API SERVICE
 # ==========================================================================
 @st.cache_resource
 def get_google_service():
@@ -179,13 +179,26 @@ def convert_df_to_excel(df):
 
 def smart_analyze_and_clean(df_in, page_type="Sales"):
     df = df_in.copy()
+    
     if page_type == "Sales":
-        # Aggiunti Sconto7 e Sconto4 per gestione promo
         target_numeric_cols = ['Importo_Netto_TotRiga', 'Peso_Netto_TotRiga', 'Qta_Cartoni_Ordinato', 'Prezzo_Netto', 'Sconto7_Promozionali', 'Sconto4_Free']
         protected_text_cols = ['Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Descr_Articolo', 'Entity', 'Ragione Sociale', 'Decr_Cliente_Fat']
+    
     elif page_type == "Promo":
         target_numeric_cols = ['Quantità prevista', 'Quantità ordinata', 'Importo sconto', 'Sconto promo']
         protected_text_cols = ['Descrizione Cliente', 'Descrizione Prodotto', 'Descrizione Promozione', 'Riferimento', 'Tipo promo', 'Codice prodotto', 'Key Account', 'Decr_Cliente_Fat', 'Week start']
+    
+    elif page_type == "Purchase":
+        target_numeric_cols = [
+            'Order quantity', 'Received quantity', 'Invoice quantity', 
+            'Invoice amount', 'Row amount', 'Purchase price', 
+            'Kg acquistati', 'Exchange rate', 'Line amount', 'Part net weight'
+        ]
+        protected_text_cols = [
+            'Supplier name', 'Part description', 'Part group description', 
+            'Part class description', 'Division', 'Facility', 'Warehouse', 
+            'Supplier number', 'Part number', 'Purchase order'
+        ]
     else:
         target_numeric_cols = []
         protected_text_cols = []
@@ -193,18 +206,25 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
     for col in df.columns:
         if col in ['Numero_Pallet', 'Sovrapponibile', 'COMPANY']:
             continue
+        
         if any(t in col for t in protected_text_cols):
-            df[col] = df[col].astype(str).replace(['nan', 'NaN', 'None'], '-')
+            if 'Division' in col:
+                 df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(3)
+            else:
+                 df[col] = df[col].astype(str).replace(['nan', 'NaN', 'None'], '-')
             continue
+        
         sample = df[col].dropna().astype(str).head(100).tolist()
         if not sample:
             continue
+            
         if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
             try:
                 df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
                 continue
             except Exception:
                 pass
+        
         is_target_numeric = any(t in col for t in target_numeric_cols)
 
         if not is_target_numeric:
@@ -216,7 +236,7 @@ def smart_analyze_and_clean(df_in, page_type="Sales"):
         else:
             looks_numeric = True
 
-        if is_target_numeric or (looks_numeric and page_type != "Purchase"):
+        if is_target_numeric or (looks_numeric):
             try:
                 clean_col = df[col].astype(str).str.replace('€', '').str.replace('%', '').str.replace(' ', '')
                 if clean_col.str.contains(',', regex=False).any():
@@ -253,6 +273,23 @@ def guess_column_role(df, page_type="Sales"):
             'start_date': ['Sell in da'], 'status': ['Stato'], 'division': ['Division'],
             'type': ['Tipo promo'], 'week_start': ['Week start']
         }
+    elif page_type == "Purchase":
+        guesses = {
+            'supplier': None, 'order_date': None, 'amount': None, 'kg': None, 'division': None,
+            'status': None, 'product': None, 'category': None, 'price': None, 'row_amount': None
+        }
+        golden_rules = {
+            'supplier': ['Supplier name', 'Supplier number'],
+            'order_date': ['Purchase order date', 'Date of receipt'],
+            'amount': ['Invoice amount', 'Row amount'],
+            'kg': ['Kg acquistati'],
+            'division': ['Division'],
+            'status': ['Highest status', 'Lowest status'],
+            'product': ['Part description', 'Part number'],
+            'category': ['Part group description', 'Part group'],
+            'price': ['Purchase price'],
+            'row_amount': ['Row amount']
+        }
     else:
         return {}
 
@@ -265,7 +302,6 @@ def guess_column_role(df, page_type="Sales"):
 
 
 def set_idx(guess, options):
-    """Helper: ritorna l'indice di guess in options, oppure 0."""
     return options.index(guess) if guess in options else 0
 
 
@@ -351,15 +387,11 @@ if page == "📊 Vendite & Fatturazione":
                 (df_global[col_data].dt.date <= d_end)
             ]
 
-        # FIX STABILITÀ FILTRI: Wrap in st.form
-        st.sidebar.markdown("### 🎛️ Filtri Avanzati")
-        possible_filters = [
-            c for c in all_cols
-            if c not in [col_euro, col_kg, col_cartons, col_data, col_entity]
-        ]
-        
         with st.sidebar.form("advanced_filters_form"):
-            filters_selected = st.multiselect("Aggiungi filtri (es. Vettore, Regione):", possible_filters)
+            filters_selected = st.multiselect(
+                "Aggiungi filtri (es. Vettore, Regione):",
+                [c for c in all_cols if c not in [col_euro, col_kg, col_cartons, col_data, col_entity]]
+            )
             active_filters = {}
             for f_col in filters_selected:
                 unique_vals = sorted(df_processed[f_col].astype(str).unique())
@@ -369,7 +401,6 @@ if page == "📊 Vendite & Fatturazione":
             
             apply_filters = st.form_submit_button("✅ Applica Filtri Avanzati")
 
-        # Applicazione filtri fuori dal form
         if active_filters:
             for f_col, vals in active_filters.items():
                 df_global = df_global[df_global[f_col].astype(str).isin(vals)]
@@ -520,7 +551,6 @@ if page == "📊 Vendite & Fatturazione":
                         sel_c       = st.multiselect("Filtra Clienti:", cust_available, placeholder="Tutti i clienti...")
                         submit_btn = st.form_submit_button("🔄 Applica Filtri")
 
-                    # FIX #6: Chiave session_state corretta.
                     if submit_btn or 'sales_raw_df' in st.session_state:
                         if submit_btn:
                             df_ps = df_target.copy()
@@ -530,7 +560,6 @@ if page == "📊 Vendite & Fatturazione":
                                 df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
                             st.session_state['sales_raw_df']    = df_ps
                             st.session_state['sales_group_mode'] = group_mode
-                            # Reset selettore per evitare errori se la lista cambia
                             if 'drill_down_selector' in st.session_state:
                                 del st.session_state['drill_down_selector']
 
@@ -674,7 +703,6 @@ if page == "📊 Vendite & Fatturazione":
 elif page == "🎁 Analisi Customer Promo":
     st.title("🎁 Analisi Customer Promo")
     
-    # 1. Carica file PROMO (Existing)
     df_promo_processed = None
     if files:
         file_map      = {f['name']: f for f in files}
@@ -692,12 +720,10 @@ elif page == "🎁 Analisi Customer Promo":
             if df_promo_raw is not None:
                 df_promo_processed = smart_analyze_and_clean(df_promo_raw, "Promo")
 
-    # 2. Carica file VENDITE (New Requirement)
     df_sales_for_promo = None
     if files:
         target_file_s = "From_Order_to_Invoice"
         file_list_s   = list(file_map.keys())
-        # Cerchiamo automaticamente il file vendite
         sales_file_key = next((f for f in file_list_s if target_file_s.lower() in f.lower()), None)
         
         if sales_file_key:
@@ -724,7 +750,6 @@ elif page == "🎁 Analisi Customer Promo":
         st.sidebar.markdown("### 🔍 Filtri Promo Rapidi")
         df_pglobal = df_promo_processed.copy()
 
-        # ... Existing Filters logic ...
         if p_div in df_pglobal.columns:
             divs    = sorted(df_pglobal[p_div].dropna().unique().tolist())
             idx_div = divs.index(21) if 21 in divs else (divs.index('21') if '21' in divs else 0)
@@ -743,9 +768,6 @@ elif page == "🎁 Analisi Customer Promo":
                     (df_pglobal[p_start].dt.date <= d_end)
                 ]
 
-        # Wrap Advanced Filters in Form for Stability
-        st.sidebar.markdown("### 🎛️ Filtri Avanzati Promo")
-        
         with st.sidebar.form("promo_advanced_filters"):
             if p_status in df_pglobal.columns:
                 stati         = sorted(df_pglobal[p_status].dropna().unique().tolist())
@@ -766,7 +788,6 @@ elif page == "🎁 Analisi Customer Promo":
             
             apply_promo_filters = st.form_submit_button("✅ Applica Filtri Promo")
         
-        # Apply Filters logic
         if apply_promo_filters or sel_stati:
              if p_status in df_pglobal.columns and sel_stati:
                  df_pglobal = df_pglobal[df_pglobal[p_status].isin(sel_stati)]
@@ -812,30 +833,29 @@ elif page == "🎁 Analisi Customer Promo":
 
             col_pl, col_pr = st.columns([1, 1], gap="large")
 
-            # --- LEFT COLUMN: NEW CHART (Real Sales Promo vs Normal) ---
             with col_pl:
                 st.subheader("📊 Vendite: Promo vs Normale")
                 if df_sales_for_promo is not None:
-                    # Logic for Promo vs Normal
                     df_s = df_sales_for_promo.copy()
                     
-                    # Ensure numeric columns needed
                     col_s7 = 'Sconto7_Promozionali'
                     col_s4 = 'Sconto4_Free'
                     col_kg_s = 'Peso_Netto_TotRiga'
                     col_ct_s = 'Qta_Cartoni_Ordinato'
                     col_art = 'Descr_Articolo'
                     col_cli = 'Decr_Cliente_Fat'
-                    col_ent = 'Entity'
                     
-                    if all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
+                    # 1. Rileva automaticamente la colonna Entità
+                    possible_ent_cols = ['Entity', 'Società', 'Company', 'Division', 'Azienda']
+                    col_ent = next((c for c in possible_ent_cols if c in df_s.columns), None)
+                    
+                    if col_ent and all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
                         st.caption("Filtra Dati Vendite per Grafico Promo")
 
-                        # --- FIX: Entity Filter Moved OUTSIDE Form for Immediate Rerun ---
-                        all_ents = sorted(df_s[col_ent].dropna().astype(str).unique()) if col_ent in df_s.columns else []
+                        # 2. Pre-filtro Entità (fuori dal form per triggerare subito)
+                        all_ents = sorted(df_s[col_ent].dropna().astype(str).unique())
                         default_ent = ['EITA'] if 'EITA' in all_ents else []
                         
-                        # This widget now triggers a page rerun when changed!
                         sel_ent_chart = st.multiselect(
                             "1. Filtra Entità (Pre-filtro)", 
                             all_ents, 
@@ -843,14 +863,12 @@ elif page == "🎁 Analisi Customer Promo":
                             key="promo_chart_entity_filter_outside"
                         )
 
-                        # Filter Dataset IMMEDIATELY based on Entity
-                        if sel_ent_chart and col_ent in df_s.columns:
+                        # 3. FILTRAGGIO IMMEDIATO (Cruciale per il primo caricamento)
+                        if sel_ent_chart:
                              df_s = df_s[df_s[col_ent].astype(str).isin(sel_ent_chart)]
                         
-                        # --- Form for Product/Customer Filters (Cascading works now) ---
+                        # 4. Filtri successivi (Prodotto/Cliente) nel form
                         with st.form("promo_sales_chart_filter"):
-                            
-                            # Populated based on already filtered df_s
                             all_prods = sorted(df_s[col_art].dropna().astype(str).unique())
                             all_custs = sorted(df_s[col_cli].dropna().astype(str).unique())
                             
@@ -859,20 +877,17 @@ elif page == "🎁 Analisi Customer Promo":
                             
                             apply_chart_filters = st.form_submit_button("Aggiorna Grafico")
                         
-                        # Apply secondary filters
                         if sel_prod_chart: 
                              df_s = df_s[df_s[col_art].astype(str).isin(sel_prod_chart)]
                         if sel_cust_chart: 
                              df_s = df_s[df_s[col_cli].astype(str).isin(sel_cust_chart)]
                         
-                        # Logic: Promo if S7 != 0 or S4 != 0
                         df_s['Tipo Vendita'] = np.where(
                             (df_s[col_s7] != 0) | (df_s[col_s4] != 0), 
                             'In Promozione', 
                             'Vendita Normale'
                         )
                         
-                        # Aggregation
                         promo_stats = df_s.groupby('Tipo Vendita').agg({
                             col_kg_s: 'sum',
                             col_ct_s: 'sum'
@@ -893,7 +908,6 @@ elif page == "🎁 Analisi Customer Promo":
                             fig_p.update_layout(showlegend=True, margin=dict(l=20,r=20,t=20,b=20))
                             st.plotly_chart(fig_p, use_container_width=True)
                             
-                            # Metrics Display
                             st.markdown("#### 📉 Dettaglio Metriche")
                             p_row = promo_stats[promo_stats['Tipo Vendita']=='In Promozione']
                             
@@ -911,11 +925,10 @@ elif page == "🎁 Analisi Customer Promo":
                         else:
                             st.warning("Nessun dato trovato.")
                     else:
-                        st.error("Colonne Sconto/Peso mancanti nel file Vendite.")
+                        st.error(f"Colonne mancanti per il grafico. Colonna Entità rilevata: {col_ent if col_ent else 'NON TROVATA'}")
                 else:
                     st.warning("File Vendite ('From_Order_to_Invoice') non trovato per l'analisi incrociata.")
 
-            # --- RIGHT COLUMN: Top Promos (Existing) ---
             with col_pr:
                 st.subheader("Top Promozioni (per Volume Forecast vs Actual)")
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
@@ -1023,6 +1036,7 @@ elif page == "📦 Analisi Acquisti":
             (i for i, f in enumerate(file_list) if target_file_pu.lower() in f.lower()), 0
         )
         sel_purch_file = st.sidebar.selectbox("1. File Sorgente Acquisti", file_list, index=default_idx_pu)
+        
         with st.spinner('Lettura file acquisti...'):
             df_purch_raw = load_dataset(
                 file_map[sel_purch_file]['id'],
@@ -1030,10 +1044,137 @@ elif page == "📦 Analisi Acquisti":
             )
             if df_purch_raw is not None:
                 df_purch_processed = smart_analyze_and_clean(df_purch_raw, "Purchase")
-                st.info("ℹ️ Pagina pronta. In attesa della legenda colonne per attivare i calcoli KPI.")
-                st.markdown("### Anteprima Dati Grezzi")
-                st.dataframe(df_purch_processed.head(10), use_container_width=True)
-                st.markdown("### Colonne Disponibili")
-                st.write(df_purch_processed.columns.tolist())
+                
+                if 'Kg acquistati' not in df_purch_processed.columns:
+                    if 'Row amount' in df_purch_processed.columns and 'Purchase price' in df_purch_processed.columns:
+                        df_purch_processed['Kg acquistati'] = np.where(
+                            df_purch_processed['Purchase price'] > 0,
+                            df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
+                            0
+                        )
+                    else:
+                        df_purch_processed['Kg acquistati'] = 0
+
+    if df_purch_processed is not None:
+        guesses_pu = guess_column_role(df_purch_processed, "Purchase")
+        all_cols_pu = df_purch_processed.columns.tolist()
+
+        with st.sidebar.expander("⚙️ Configurazione Colonne Acquisti", expanded=False):
+            pu_div     = st.selectbox("Division",           all_cols_pu, index=set_idx(guesses_pu['division'], all_cols_pu))
+            pu_supp    = st.selectbox("Supplier Name",      all_cols_pu, index=set_idx(guesses_pu['supplier'], all_cols_pu))
+            pu_date    = st.selectbox("Order Date",         all_cols_pu, index=set_idx(guesses_pu['order_date'], all_cols_pu))
+            pu_amount  = st.selectbox("Invoice Amount",     all_cols_pu, index=set_idx(guesses_pu['amount'], all_cols_pu))
+            pu_kg      = st.selectbox("Kg Acquistati",      all_cols_pu, index=set_idx(guesses_pu['kg'], all_cols_pu))
+            pu_prod    = st.selectbox("Part Description",   all_cols_pu, index=set_idx(guesses_pu['product'], all_cols_pu))
+            pu_cat     = st.selectbox("Part Group",         all_cols_pu, index=set_idx(guesses_pu['category'], all_cols_pu))
+        
+        df_pu_global = df_purch_processed.copy()
+        
+        st.sidebar.markdown("### 🔍 Filtri Acquisti")
+        
+        if pu_div in df_pu_global.columns:
+            divs = sorted(df_pu_global[pu_div].astype(str).unique())
+            default_div_idx = 0
+            if "021" in divs: default_div_idx = divs.index("021")
+            elif "21" in divs: default_div_idx = divs.index("21")
+            
+            sel_div_pu = st.sidebar.selectbox("Divisione", divs, index=default_div_idx)
+            df_pu_global = df_pu_global[df_pu_global[pu_div].astype(str) == sel_div_pu]
+
+        if pu_date in df_pu_global.columns and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
+            min_d, max_d = df_pu_global[pu_date].min(), df_pu_global[pu_date].max()
+            if pd.notnull(min_d):
+                d_start_pu, d_end_pu = safe_date_input("Periodo Ordini", min_d.date(), max_d.date(), key="purch_date")
+                df_pu_global = df_pu_global[
+                    (df_pu_global[pu_date].dt.date >= d_start_pu) &
+                    (df_pu_global[pu_date].dt.date <= d_end_pu)
+                ]
+
+        if pu_supp in df_pu_global.columns:
+            all_suppliers = sorted(df_pu_global[pu_supp].dropna().astype(str).unique())
+            sel_suppliers = st.sidebar.multiselect("Fornitori", all_suppliers)
+            if sel_suppliers:
+                df_pu_global = df_pu_global[df_pu_global[pu_supp].astype(str).isin(sel_suppliers)]
+
+        if not df_pu_global.empty:
+            tot_invoice_pu = df_pu_global[pu_amount].sum() if pu_amount else 0
+            tot_kg_pu      = df_pu_global[pu_kg].sum() if pu_kg else 0
+            tot_orders_pu  = df_pu_global['Purchase order'].nunique() if 'Purchase order' in df_pu_global.columns else 0
+            avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
+
+            kpi_purch_html = f"""
+            <div class="kpi-grid">
+                <div class="kpi-card purch-card">
+                    <div class="kpi-title">💸 Spesa Totale</div>
+                    <div class="kpi-value">€ {tot_invoice_pu:,.0f}</div>
+                    <div class="kpi-subtitle">Totale Fatturato (Invoice Amount)</div>
+                </div>
+                <div class="kpi-card purch-card">
+                    <div class="kpi-title">⚖️ Volume Totale</div>
+                    <div class="kpi-value">{tot_kg_pu:,.0f} Kg</div>
+                    <div class="kpi-subtitle">Kg Acquistati (Calcolati/Reali)</div>
+                </div>
+                <div class="kpi-card purch-card">
+                    <div class="kpi-title">📦 Ordini Totali</div>
+                    <div class="kpi-value">{tot_orders_pu}</div>
+                    <div class="kpi-subtitle">Numero Ordini Acquisto</div>
+                </div>
+                <div class="kpi-card purch-card">
+                    <div class="kpi-title">🏷️ Prezzo Medio</div>
+                    <div class="kpi-value">€ {avg_price_kg:.2f}</div>
+                    <div class="kpi-subtitle">Prezzo medio al Kg</div>
+                </div>
+            </div>
+            """
+            st.markdown(kpi_purch_html, unsafe_allow_html=True)
+            st.divider()
+
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.subheader("📅 Trend Spesa nel Tempo")
+                if pu_date and pu_amount:
+                    trend_pu = df_pu_global.groupby(pd.Grouper(key=pu_date, freq='ME'))[pu_amount].sum().reset_index()
+                    fig_trend = px.line(trend_pu, x=pu_date, y=pu_amount, markers=True)
+                    fig_trend.update_layout(height=400, xaxis_title="", yaxis_title="€ Fatturato")
+                    st.plotly_chart(fig_trend, use_container_width=True)
+            
+            with c2:
+                st.subheader("🏆 Top Fornitori (per Spesa)")
+                if pu_supp and pu_amount:
+                    top_supp = df_pu_global.groupby(pu_supp)[pu_amount].sum().sort_values(ascending=False).head(10).reset_index()
+                    fig_supp = px.bar(top_supp, x=pu_amount, y=pu_supp, orientation='h', color=pu_amount, color_continuous_scale='Viridis')
+                    fig_supp.update_layout(height=400, yaxis=dict(autorange="reversed"), xaxis_title="€ Fatturato", yaxis_title="")
+                    st.plotly_chart(fig_supp, use_container_width=True)
+
+            st.subheader("📋 Dettaglio Righe Acquisto")
+            
+            cols_to_show = [
+                'Purchase order', 'Purchase order date', 'Supplier name', 
+                'Part description', 'Part group description', 
+                'Order quantity', 'Received quantity', 'Invoice amount', 'Kg acquistati'
+            ]
+            cols_present = [c for c in cols_to_show if c in df_pu_global.columns]
+            
+            st.dataframe(
+                df_pu_global[cols_present],
+                column_config={
+                    'Purchase order date': st.column_config.DateColumn("Data Ordine"),
+                    'Invoice amount': st.column_config.NumberColumn("Importo Fatt.", format="€ %.2f"),
+                    'Kg acquistati': st.column_config.NumberColumn("Kg Calc.", format="%.0f"),
+                    'Order quantity': st.column_config.NumberColumn("Qta Ord.", format="%.0f"),
+                },
+                use_container_width=True,
+                height=500
+            )
+            
+            excel_data_pu = convert_df_to_excel(df_pu_global[cols_present])
+            st.download_button(
+                label="📥 Scarica Report Acquisti (.xlsx)",
+                data=excel_data_pu,
+                file_name=f"Report_Acquisti_{datetime.date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
     else:
         st.error("Nessun file trovato.")
