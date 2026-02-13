@@ -12,10 +12,10 @@ import json
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v45.0 - KPI fix colonna esistente, Periodo Analisi acquisti)
+# 1. CONFIGURAZIONE & STILE (v46.0 - Filtri multiselect, Mostra colonne, Tooltip, AI anti-allucinazioni, Grafici 3D premium)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v45.0",
+    page_title="EITA Analytics Pro v46.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -23,55 +23,115 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* ---- LAYOUT ---- */
+  .block-container {
+    padding-top:1.8rem !important; padding-bottom:3rem !important;
+    padding-left:1.5rem !important; padding-right:1.5rem !important;
+    max-width:1700px;
+  }
+  [data-testid="stElementToolbar"] { display:none; }
+
+  /* ---- KPI GRID ---- */
+  .kpi-grid {
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:1.2rem; margin-bottom:2rem;
+  }
+  .kpi-card {
+    background:rgba(130,150,200,0.08);
+    backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    border:1px solid rgba(130,150,200,0.2); border-radius:18px;
+    padding:1.5rem;
+    box-shadow:0 8px 32px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04),
+               inset 0 1px 0 rgba(255,255,255,0.15);
+    transition:transform 0.25s ease, box-shadow 0.25s ease;
+    position:relative; overflow:hidden;
+  }
+  .kpi-card:hover {
+    transform:translateY(-6px);
+    box-shadow:0 16px 48px rgba(0,0,0,0.14), 0 4px 12px rgba(0,0,0,0.08);
+    border:1px solid rgba(130,150,200,0.45);
+  }
+  .kpi-card::before {
+    content:""; position:absolute; left:0; top:0;
+    height:100%; width:6px;
+    background:linear-gradient(180deg,#00c6ff,#0072ff);
+    border-radius:18px 0 0 18px;
+  }
+  .kpi-card::after {
+    content:""; position:absolute; top:-60%; right:-20%;
+    width:140%; height:140%; border-radius:50%;
+    background:radial-gradient(circle, rgba(0,114,255,0.04) 0%, transparent 70%);
+    pointer-events:none;
+  }
+  .kpi-card.promo-card::before { background:linear-gradient(180deg,#ff6b9d,#fecfef); }
+  .kpi-card.promo-card::after  { background:radial-gradient(circle,rgba(255,107,157,0.04) 0%,transparent 70%); }
+  .kpi-card.purch-card::before { background:linear-gradient(180deg,#43e97b,#38f9d7); }
+  .kpi-card.purch-card::after  { background:radial-gradient(circle,rgba(67,233,123,0.04) 0%,transparent 70%); }
+  .kpi-title    { font-size:0.82rem; font-weight:700; text-transform:uppercase;
+                  letter-spacing:1.2px; opacity:0.7; margin-bottom:0.5rem; }
+  .kpi-value    { font-size:1.9rem; font-weight:800; line-height:1.2;
+                  background:linear-gradient(135deg,#e0e8ff,#ffffff);
+                  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+                  background-clip:text; }
+  .kpi-subtitle { font-size:0.76rem; opacity:0.55; margin-top:0.35rem; }
+
+  /* ---- CHARTS ---- */
+  .stPlotlyChart {
+    border-radius:14px; overflow:hidden;
+    box-shadow:0 6px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06);
+    transition:all 0.3s ease;
+  }
+  .stPlotlyChart:hover {
+    box-shadow:0 12px 40px rgba(0,0,0,0.18), 0 4px 12px rgba(0,0,0,0.1);
+    transform:translateY(-2px);
+  }
+
+  /* ---- DETAIL SECTION ---- */
+  .detail-section {
+    background:rgba(0,198,255,0.05);
+    border-left:5px solid #00c6ff;
+    padding:15px; margin-top:20px; border-radius:4px;
+    box-shadow:0 2px 8px rgba(0,198,255,0.1);
+  }
+
+  /* ---- AI CHAT ---- */
+  .ai-chat-msg-user {
+    background:rgba(0,114,255,0.1); border-radius:12px 12px 4px 12px;
+    padding:10px 14px; margin:6px 0; font-size:0.9rem;
+    border-left:3px solid #0072ff;
+  }
+  .ai-chat-msg-bot {
+    background:rgba(67,233,123,0.07); border-radius:12px 12px 12px 4px;
+    padding:10px 14px; margin:6px 0; font-size:0.9rem;
+    border-left:3px solid #43e97b; overflow-x:auto;
+  }
+  .ai-chat-container {
+    max-height:400px; overflow-y:auto;
+    padding-right:4px; scrollbar-width:thin;
+  }
+  .ai-chat-container::-webkit-scrollbar { width:4px; }
+  .ai-chat-container::-webkit-scrollbar-thumb {
+    background:rgba(130,150,200,0.3); border-radius:2px;
+  }
+
+  /* ---- RESPONSIVE ---- */
+  @media (max-width:900px) {
     .block-container {
-        padding-top: 2rem !important; padding-bottom: 3rem !important;
-        padding-left: 1.5rem !important; padding-right: 1.5rem !important;
-        max-width: 1600px;
+      padding-left:0.6rem !important;
+      padding-right:0.6rem !important;
+      padding-top:1rem !important;
     }
-    [data-testid="stElementToolbar"] { display: none; }
-    .kpi-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 1.2rem; margin-bottom: 2rem;
-    }
-    .kpi-card {
-        background: rgba(130,150,200,0.1); backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border: 1px solid rgba(130,150,200,0.2); border-radius: 16px;
-        padding: 1.5rem; box-shadow: 0 8px 32px 0 rgba(0,0,0,0.05);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-        position: relative; overflow: hidden;
-    }
-    .kpi-card:hover {
-        transform: translateY(-5px); box-shadow: 0 12px 40px 0 rgba(0,0,0,0.15);
-        border: 1px solid rgba(130,150,200,0.4);
-    }
-    .kpi-card::before {
-        content:""; position:absolute; left:0; top:0; height:100%; width:6px;
-        background:linear-gradient(180deg,#00c6ff,#0072ff);
-        border-radius:16px 0 0 16px;
-    }
-    .kpi-card.promo-card::before { background:linear-gradient(180deg,#ff9a9e,#fecfef); }
-    .kpi-card.purch-card::before { background:linear-gradient(180deg,#43e97b,#38f9d7); }
-    .kpi-title  { font-size:0.9rem; font-weight:600; text-transform:uppercase;
-                  letter-spacing:1px; opacity:0.8; margin-bottom:0.5rem; }
-    .kpi-value  { font-size:2rem; font-weight:800; line-height:1.2; }
-    .kpi-subtitle { font-size:0.8rem; opacity:0.6; margin-top:0.3rem; }
-    .stPlotlyChart { filter:drop-shadow(4px 6px 8px rgba(0,0,0,0.2));
-                     transition:all 0.3s ease; }
-    .stPlotlyChart:hover { filter:drop-shadow(6px 10px 12px rgba(0,0,0,0.3)); }
-    .detail-section {
-        background-color:#f8f9fa; border-left:5px solid #00c6ff;
-        padding:15px; margin-top:20px; border-radius:4px;
-    }
-    @media (max-width:768px) {
-        .block-container { padding-left:0.5rem !important;
-                           padding-right:0.5rem !important;
-                           padding-top:1rem !important; }
-        .kpi-grid { gap:0.8rem; }
-        .kpi-value { font-size:1.6rem; }
-        .kpi-card  { padding:1.2rem; }
-    }
+    .kpi-grid { gap:0.75rem; }
+    .kpi-value { font-size:1.5rem; }
+    .kpi-card  { padding:1.1rem; }
+    .kpi-title { font-size:0.75rem; }
+  }
+  @media (max-width:480px) {
+    .kpi-grid { grid-template-columns:1fr 1fr; gap:0.6rem; }
+    .kpi-value { font-size:1.3rem; }
+    .kpi-card  { padding:0.9rem; }
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -415,26 +475,83 @@ def render_kpi_cards(cards: list, card_class: str = "") -> None:
 # 4. AI DATA ASSISTANT (Gemini)
 # ==========================================================================
 
+# Legenda colonne per l'AI (usata nel system prompt e nei tooltip)
+_COL_LEGEND = {
+    "Supplier number":       "Codice del fornitore",
+    "Supplier name":         "Nome del fornitore",
+    "Division":              "Divisione aziendale (entità / società)",
+    "Purchase order":        "Numero d'ordine di acquisto del sistema",
+    "Purchase order date":   "Data dell'ordine di acquisto del sistema",
+    "Purchase line":         "Quante linee di prodotto (prodotti diversi) nell'ordine",
+    "Lowest status":         "Numero che identifica lo stato dell'ordine nell'ERP (min)",
+    "Highest status":        "Numero che identifica lo stato dell'ordine nell'ERP (max)",
+    "Facility":              "Codice del sito produttivo di destinazione",
+    "Warehouse":             "Codice del magazzino di arrivo merce",
+    "Part number":           "Codice prodotto",
+    "Part description":      "Descrizione prodotto",
+    "Part group":            "Codice del gruppo di acquisto",
+    "Part group description":"Descrizione del gruppo di acquisto",
+    "Part class":            "Codice sottocategoria del gruppo di acquisto",
+    "Part class description":"Descrizione sottocategoria del gruppo di acquisto",
+    "Part net weight":       "Peso del singolo cartone in kg",
+    "Order quantity":        "Quantità ordinata",
+    "Delivery date":         "Data di consegna richiesta",
+    "ibourt":                "Se = 1, presente numero contratto in ibourr",
+    "ibourr":                "Numero del contratto di acquisto",
+    "Purchase price":        "Costo di acquisto dell'articolo (€/kg)",
+    "Row amount":            "Importo stimato della riga al momento dell'ordine",
+    "Supplier delivery number":"Numero di consegna del fornitore",
+    "Received quantity":     "Quantità di merce effettivamente ricevuta",
+    "Date of receipt":       "Data effettiva di ricevimento merce",
+    "Invoice number":        "Numero fattura",
+    "Invoice date":          "Data fattura",
+    "Invoice quantity":      "Quantità di merce effettivamente fatturata",
+    "Invoice amount":        "Totale importo fatturato (dato certo e definitivo)",
+    "Invoice currency":      "Valuta usata nella fattura",
+    "Exchange rate":         "Tasso di cambio applicato",
+    "Line amount":           "Importo totale linea",
+    "Line amount internal":  "Importo totale linea con dati interni",
+    "G/L Account":           "Conto contabile",
+    "Cost Center":           "Centro di costo",
+    "Utente inserimento":    "Utente che ha inserito l'ordine",
+    "Utente ultima modifica":"Utente che ha modificato per ultimo l'ordine",
+    "Sett. Riferimento Data ordine":   "Settimana dell'anno della data ordine",
+    "Sett. Riferimento Data consegna": "Settimana dell'anno della data consegna",
+    "Mese Riferimento Data ordine":    "Mese dell'anno della data ordine",
+    "Mese Riferimento Data consegna":  "Mese dell'anno della data consegna",
+    "Kg acquistati":         "Kg acquistati = Line amount / Purchase price",
+}
+
+_AI_SYSTEM_PROMPT = """Sei un assistente dati di Business Intelligence preciso e affidabile.
+
+REGOLE FONDAMENTALI — rispettale sempre:
+1. RISPONDI SOLO con dati presenti nel contesto fornito. Se un dato non è nel contesto, dì "Non ho questo dato nel contesto attuale".
+2. NON inventare, NON stimare, NON dedurre valori non presenti. Meglio dire "non so" che dare un numero sbagliato.
+3. Cita sempre il valore esatto trovato nel dataset. Es: "Il fornitore X ha un Invoice amount di € 12.345,67 (fonte: riga presente nel campione dati)".
+4. Se l'utente chiede un'analisi impossibile con i dati forniti, spiegalo chiaramente.
+5. Rispondi sempre in italiano, in modo professionale e conciso.
+6. Per le tabelle usa formato Markdown (| col1 | col2 |).
+7. Per i calcoli mostra la formula usata e i valori intermedi.
+8. Se hai dubbi sulla completezza del campione (es. dataset > 300 righe), segnalalo.
+"""
+
+
+@st.cache_resource
 def _get_gemini_client():
-    """Inizializza Gemini con la chiave dalle secrets."""
+    """Singleton Gemini client (cache_resource → inizializzato una sola volta)."""
     try:
         api_key = st.secrets.get("gemini_api_key", "")
         if not api_key:
             return None, "Secret 'gemini_api_key' non trovato"
         genai.configure(api_key=api_key)
-        
-        # FIX: Cambiato model_name da "gemini-1.5-flash" (non valido/deprecato) a "gemini-2.5-flash" (modello stabile attuale per generateContent).
-        #      Se persiste errore, prova "gemini-2.5-flash-latest" o verifica su https://ai.google.dev/gemini-api/docs/models.
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",  # Modello corretto e stabile
-            system_instruction=(
-                "Sei un assistente dati esperto di business intelligence. "
-                "Aiuti l'utente a interpretare dati aziendali di vendita, promozioni e acquisti. "
-                "Rispondi sempre in italiano, in modo conciso e professionale. "
-                "Se ti viene fornito un contesto dati (CSV/tabella), analizzalo e rispondi "
-                "basandoti sui numeri reali. "
-                "Evita risposte generiche: sii specifico e orientato all'azione."
-            )
+            model_name="gemini-2.0-flash",
+            system_instruction=_AI_SYSTEM_PROMPT,
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,      # bassa temperatura → meno creatività, più precisione
+                top_p=0.85,
+                max_output_tokens=4096,
+            ),
         )
         return model, None
     except Exception as e:
@@ -443,55 +560,75 @@ def _get_gemini_client():
 
 def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""):
     """
-    Renderizza la chat AI nella sidebar.
-    context_df: DataFrame opzionale con i dati attualmente visualizzati,
-                usato come contesto per le domande dell'utente.
+    AI Data Assistant nella sidebar con:
+    - System prompt anti-allucinazioni
+    - Chat history con rendering Markdown (tabelle, codice)
+    - Area risposta espandibile al click, collassabile
+    - Input sempre visibile
     """
     st.sidebar.markdown("### 💬 AI Data Assistant")
 
-    with st.sidebar.expander("Chat", expanded=False):
-        # Inizializza storico chat
-        if "ai_chat_history" not in st.session_state:
-            st.session_state["ai_chat_history"] = []
+    # Inizializza stato
+    if "ai_chat_history"  not in st.session_state:
+        st.session_state["ai_chat_history"]  = []
+    if "ai_chat_expanded" not in st.session_state:
+        st.session_state["ai_chat_expanded"] = False
 
-        # Mostra storico messaggi
-        for msg in st.session_state["ai_chat_history"]:
-            role_icon = "🧑" if msg["role"] == "user" else "🤖"
-            st.markdown(f"**{role_icon}** {msg['text']}")
+    has_history = len(st.session_state["ai_chat_history"]) > 0
 
-        # Bottone reset
-        if st.session_state["ai_chat_history"]:
-            if st.button("🗑️ Pulisci chat", key="clear_ai_chat"):
-                st.session_state["ai_chat_history"] = []
-                st.rerun()
+    # Expander Chat: auto-aperto se c'è storico
+    with st.sidebar.expander("💬 Chat", expanded=has_history):
+        if has_history:
+            st.markdown('<div class="ai-chat-container">', unsafe_allow_html=True)
+            for msg in st.session_state["ai_chat_history"]:
+                if msg["role"] == "user":
+                    st.markdown(
+                        f'<div class="ai-chat-msg-user">🧑 {msg["text"]}</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    # Rendering Markdown completo (supporta tabelle, codice, grassetto)
+                    st.markdown("🤖 **Risposta:**")
+                    st.markdown(msg["text"])
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    # Input fuori dall'expander per visibilità (come nello screenshot)
+            col_c, col_x = st.columns([1, 1])
+            with col_c:
+                if st.button("🗑️ Pulisci", key="clear_ai_chat", use_container_width=True):
+                    st.session_state["ai_chat_history"] = []
+                    st.rerun()
+            with col_x:
+                if st.button("📋 Copia tutto", key="copy_ai_chat", use_container_width=True):
+                    all_text = "\n\n".join(
+                        f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
+                        for m in st.session_state["ai_chat_history"]
+                    )
+                    st.code(all_text, language=None)
+        else:
+            st.caption("Fai una domanda sui dati della pagina corrente.")
+            st.caption("💡 Esempi: 'Qual è il fornitore con più spesa?' · 'Mostra top 5 prodotti per kg' · 'Crea una tabella riepilogo per divisione'")
+
+    # Input chat sempre visibile
     user_input = st.sidebar.chat_input("Chiedi ai dati...", key="ai_chat_input")
 
     if user_input:
         model, err = _get_gemini_client()
-
         if model is None:
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # Costruisce contesto dati ottimizzato per Gemini
-        # Strategia: statistiche complete + campione stratificato (max 300 righe)
-        # → risposta veloce senza perdere capacità di analisi
+        # Costruisce contesto dati: stats complete + campione stratificato
         context_text = ""
         if context_df is not None and not context_df.empty:
             try:
                 stats_str = context_df.describe(include="all").to_string()
             except Exception:
                 stats_str = "Statistiche non disponibili"
-
-            # Campione stratificato: se il df ha più di 300 righe,
-            # prendi le prime 150 (ordine originale) + 150 random
             n_total = len(context_df)
             if n_total <= 300:
                 sample_df = context_df
             else:
-                top_half = context_df.head(150)
+                top_half  = context_df.head(150)
                 rand_half = context_df.iloc[150:].sample(
                     n=min(150, n_total - 150), random_state=42
                 )
@@ -499,45 +636,35 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
 
             context_text = (
                 "\n\n=== CONTESTO DATI: " + context_label + " ===\n"
-                + f"Dataset filtrato: {n_total} righe totali | "
-                + f"Campione inviato: {len(sample_df)} righe\n"
+                + f"Totale righe nel dataset filtrato: {n_total}\n"
+                + f"Righe nel campione inviato: {len(sample_df)}"
+                + (" (ATTENZIONE: campione parziale, segnalalo nella risposta)" if n_total > 300 else "") + "\n"
                 + f"Colonne ({len(context_df.columns)}): {', '.join(context_df.columns.tolist())}\n\n"
-                + "--- STATISTICHE DESCRITTIVE (su tutto il dataset) ---\n"
+                + "--- STATISTICHE DESCRITTIVE (calcolate sull'intero dataset) ---\n"
                 + stats_str + "\n\n"
-                + "--- CAMPIONE DATI (CSV) ---\n"
+                + "--- DATI CAMPIONE (CSV) ---\n"
                 + sample_df.to_csv(index=False)
                 + "\n=== FINE CONTESTO ===\n"
             )
 
-        # Ricostruisce la history per Gemini
-        history = []
-        for msg in st.session_state["ai_chat_history"]:
-            history.append({
-                "role": msg["role"],
-                "parts": [msg["text"]]
-            })
+        history = [
+            {"role": m["role"], "parts": [m["text"]]}
+            for m in st.session_state["ai_chat_history"]
+        ]
 
-        try:
-            chat = model.start_chat(history=history)
-            full_prompt = user_input + context_text
-            response = chat.send_message(full_prompt)
-            answer = response.text
+        with st.sidebar:
+            with st.spinner("🤖 Elaborazione..."):
+                try:
+                    chat     = model.start_chat(history=history)
+                    response = chat.send_message(user_input + context_text)
+                    answer   = response.text
 
-            # Logga l'uso dei token per monitorare quota
-            if hasattr(response, 'usage_metadata'):
-                st.sidebar.info(f"Token usati: Input {response.usage_metadata.prompt_token_count}, Output {response.usage_metadata.candidates_token_count}")
+                    st.session_state["ai_chat_history"].append({"role": "user",  "text": user_input})
+                    st.session_state["ai_chat_history"].append({"role": "model", "text": answer})
+                    st.rerun()
 
-            # Salva in history
-            st.session_state["ai_chat_history"].append(
-                {"role": "user", "text": user_input}
-            )
-            st.session_state["ai_chat_history"].append(
-                {"role": "model", "text": answer}
-            )
-            st.rerun()
-
-        except Exception as e:
-            st.sidebar.error(f"Errore Gemini: {e}")
+                except Exception as e:
+                    st.sidebar.error(f"Errore Gemini: {e}")
 
 
 # ==========================================================================
@@ -737,36 +864,77 @@ if page == "📊 Vendite & Fatturazione":
                                  .head(10)
                     )
                     if chart_type == "📊 Barre 3D":
-                        fig = go.Figure(go.Bar(
+                        # Barre con effetto 3D: sfumatura cromatica + shadow simulata
+                        n_bars   = len(prod_agg)
+                        colors   = [f"rgba({20+i*18},{80+i*14},{200-i*12}, 0.85)"
+                                    for i in range(n_bars)]
+                        fig = go.Figure()
+                        # Shadow layer (barre leggermente più scure spostate)
+                        fig.add_trace(go.Bar(
+                            y=prod_agg[col_prod], x=prod_agg[col_euro] * 1.005,
+                            orientation='h', showlegend=False,
+                            marker=dict(color="rgba(0,0,0,0.12)", line=dict(width=0)),
+                            hoverinfo='skip',
+                        ))
+                        # Main bars
+                        fig.add_trace(go.Bar(
                             y=prod_agg[col_prod], x=prod_agg[col_euro], orientation='h',
-                            marker=dict(color=prod_agg[col_euro], colorscale='Blues',
-                                        line=dict(color='rgba(0,0,0,0.4)', width=1.5)),
+                            marker=dict(
+                                color=prod_agg[col_euro],
+                                colorscale=[[0,"#0050d0"],[0.5,"#4da6ff"],[1,"#00c6ff"]],
+                                line=dict(color="rgba(255,255,255,0.35)", width=1.2),
+                                opacity=0.92,
+                            ),
                             text=prod_agg[col_euro].apply(lambda v: f"€ {v:,.0f}"),
                             textposition='inside', insidetextanchor='middle',
-                            hovertemplate="<b>%{y}</b><br>Fatturato: € %{x:,.2f}<extra></extra>"
+                            textfont=dict(size=11, color="white", family="Arial Black"),
+                            hovertemplate="<b>%{y}</b><br>💰 Fatturato: € %{x:,.2f}<extra></extra>"
                         ))
                         fig.update_layout(
-                            height=450,
-                            yaxis=dict(autorange="reversed", showgrid=False),
-                            xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)'),
-                            margin=dict(l=0, r=0, t=10, b=10),
-                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+                            height=460, barmode='overlay',
+                            yaxis=dict(autorange="reversed", showgrid=False,
+                                       tickfont=dict(size=11)),
+                            xaxis=dict(showgrid=True,
+                                       gridcolor='rgba(128,128,128,0.15)',
+                                       tickprefix="€ "),
+                            margin=dict(l=0, r=10, t=10, b=10),
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            showlegend=False,
                         )
                     else:
                         hole_size  = 0.45 if "Donut" in chart_type else 0
-                        pull_array = [0.12] + [0] * (len(prod_agg) - 1)
+                        pull_array = [0.15] + [0.03] * (len(prod_agg) - 1)
+                        # Palette premium con gradiente
+                        palette    = [
+                            "#0072ff","#00c6ff","#43e97b","#ff6b9d",
+                            "#f7971e","#9b59b6","#1abc9c","#e74c3c",
+                            "#3498db","#f39c12"
+                        ]
                         fig = go.Figure(go.Pie(
                             labels=prod_agg[col_prod], values=prod_agg[col_euro],
                             hole=hole_size, pull=pull_array,
-                            marker=dict(colors=px.colors.qualitative.Pastel,
-                                        line=dict(color='white', width=2.5)),
-                            textinfo='percent+label', textposition='outside',
-                            hovertemplate="<b>%{label}</b><br>€ %{value:,.2f}<br>%{percent}<extra></extra>"
+                            marker=dict(
+                                colors=palette[:len(prod_agg)],
+                                line=dict(color='rgba(255,255,255,0.7)', width=2.5),
+                            ),
+                            textinfo='percent+label', textposition='auto',
+                            textfont=dict(size=11, family="Arial"),
+                            hovertemplate="<b>%{label}</b><br>💰 € %{value:,.2f}<br>📊 %{percent}<extra></extra>",
+                            rotation=15,
                         ))
+                        if "Donut" in chart_type:
+                            fig.add_annotation(
+                                text=f"€ {prod_agg[col_euro].sum()/1e6:.1f}M" if prod_agg[col_euro].sum() > 1e6
+                                     else f"€ {prod_agg[col_euro].sum():,.0f}",
+                                x=0.5, y=0.5, xref="paper", yref="paper",
+                                showarrow=False, font=dict(size=14, color="white", family="Arial Black"),
+                            )
                         fig.update_layout(
-                            height=450, margin=dict(l=20, r=20, t=20, b=20),
-                            showlegend=False,
-                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+                            height=460, margin=dict(l=20, r=20, t=20, b=20),
+                            showlegend=True,
+                            legend=dict(orientation="v", x=1.0, y=0.5, font=dict(size=10)),
+                            paper_bgcolor='rgba(0,0,0,0)',
                         )
                     st.plotly_chart(fig, use_container_width=True)
 
@@ -1170,14 +1338,27 @@ elif page == "🎁 Analisi Customer Promo":
                                   .sort_values(p_qty_a, ascending=False)
                                   .head(8)
                     )
-                    fig = go.Figure(go.Bar(
-                        x=top_promos[p_qty_a], y=top_promos[promo_desc_col], orientation='h',
-                        marker=dict(color=top_promos[p_qty_a], colorscale='Purp',
-                                    line=dict(color='rgba(0,0,0,0.4)', width=1.5))
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        y=top_promos[promo_desc_col], x=top_promos[p_qty_a],
+                        orientation='h',
+                        marker=dict(
+                            color=top_promos[p_qty_a],
+                            colorscale=[[0,"#fecfef"],[0.5,"#ff6b9d"],[1,"#a855f7"]],
+                            line=dict(color='rgba(255,255,255,0.3)', width=1),
+                            opacity=0.9,
+                        ),
+                        text=top_promos[p_qty_a].apply(lambda v: f"{v:,.0f}"),
+                        textposition='inside', insidetextanchor='middle',
+                        textfont=dict(size=11, color='white', family='Arial Black'),
+                        hovertemplate="<b>%{y}</b><br>📦 Qty: %{x:,.0f}<extra></extra>",
                     ))
                     fig.update_layout(
-                        height=450, yaxis=dict(autorange="reversed"),
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+                        height=460,
+                        yaxis=dict(autorange="reversed", showgrid=False, tickfont=dict(size=10)),
+                        xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.15)'),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(l=0, r=10, t=10, b=10),
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
@@ -1476,8 +1657,26 @@ elif page == "📦 Analisi Acquisti":
                         trend_pu = (df_pu_global
                                     .groupby(pd.Grouper(key=pu_date, freq='ME'))[pu_amount]
                                     .sum().reset_index())
-                        fig_trend = px.line(trend_pu, x=pu_date, y=pu_amount, markers=True)
-                        fig_trend.update_layout(height=400, xaxis_title="", yaxis_title="€ Fatturato")
+                        fig_trend = go.Figure()
+                        # Area riempita sotto la curva
+                        fig_trend.add_trace(go.Scatter(
+                            x=trend_pu[pu_date], y=trend_pu[pu_amount],
+                            fill='tozeroy',
+                            fillcolor='rgba(67,233,123,0.12)',
+                            line=dict(color='#43e97b', width=3, shape='spline', smoothing=1.2),
+                            mode='lines+markers',
+                            marker=dict(size=7, color='#38f9d7',
+                                        line=dict(color='white', width=1.5)),
+                            hovertemplate="📅 %{x|%b %Y}<br>💸 € %{y:,.2f}<extra></extra>",
+                        ))
+                        fig_trend.update_layout(
+                            height=400,
+                            xaxis=dict(title="", showgrid=False, tickformat="%b %Y"),
+                            yaxis=dict(title="€ Fatturato", gridcolor='rgba(128,128,128,0.15)',
+                                       tickprefix="€ "),
+                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                            margin=dict(l=0, r=0, t=10, b=10),
+                        )
                         st.plotly_chart(fig_trend, use_container_width=True)
                     except Exception as e:
                         st.warning(f"Impossibile generare grafico temporale: {e}")
@@ -1491,125 +1690,182 @@ elif page == "📦 Analisi Acquisti":
                                 .groupby(pu_supp)[pu_amount]
                                 .sum().sort_values(ascending=False)
                                 .head(10).reset_index())
-                    fig_supp = px.bar(
-                        top_supp, x=pu_amount, y=pu_supp, orientation='h',
-                        color=pu_amount, color_continuous_scale='Viridis'
-                    )
+                    fig_supp = go.Figure()
+                    fig_supp.add_trace(go.Bar(
+                        y=top_supp[pu_supp], x=top_supp[pu_amount],
+                        orientation='h',
+                        marker=dict(
+                            color=top_supp[pu_amount],
+                            colorscale=[[0,"#38f9d7"],[0.5,"#43e97b"],[1,"#0072ff"]],
+                            line=dict(color='rgba(255,255,255,0.3)', width=1),
+                            opacity=0.9,
+                        ),
+                        text=top_supp[pu_amount].apply(lambda v: f"€ {v:,.0f}"),
+                        textposition='inside', insidetextanchor='middle',
+                        textfont=dict(size=10, color='white'),
+                        hovertemplate="<b>%{y}</b><br>💸 € %{x:,.2f}<extra></extra>",
+                    ))
                     fig_supp.update_layout(
-                        height=400, yaxis=dict(autorange="reversed"),
-                        xaxis_title="€ Fatturato", yaxis_title=""
+                        height=420,
+                        yaxis=dict(autorange="reversed", showgrid=False, tickfont=dict(size=10)),
+                        xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.15)',
+                                   tickprefix="€ "),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(l=0, r=10, t=10, b=10),
+                        coloraxis_showscale=False,
                     )
                     st.plotly_chart(fig_supp, use_container_width=True)
 
-            # --- DETTAGLIO RIGHE ACQUISTO (colonne sceglibili, ordinabili, filtrabili) ---
+            # --- DETTAGLIO RIGHE ACQUISTO ---
             st.subheader("📋 Dettaglio Righe Acquisto")
 
-            # Colonne disponibili (escluso Part number old come da legenda)
             all_available_cols = [c for c in df_pu_global.columns if c not in HIDDEN_COLS_PU]
 
-            ctrl1, ctrl2, ctrl3 = st.columns([3, 1.5, 1.2])
-            with ctrl1:
-                default_vis_cols = [c for c in [
-                    'Purchase order', 'Purchase order date', 'Supplier name',
-                    'Part description', 'Part group description',
-                    'Order quantity', 'Received quantity', 'Invoice amount', 'Kg acquistati'
-                ] if c in all_available_cols]
-                sel_display_cols = st.multiselect(
-                    "📌 Colonne da visualizzare:",
-                    options=["⭐ TUTTE"] + all_available_cols,
-                    default=["⭐ TUTTE"],
-                    key="pu_cols_select"
-                )
-                cols_to_display = (
-                    all_available_cols
-                    if not sel_display_cols or "⭐ TUTTE" in sel_display_cols
-                    else [c for c in sel_display_cols if c in all_available_cols]
-                )
+            # Colonne di default (da legenda utente)
+            _DEFAULT_DETAIL_COLS = [
+                'Supplier number', 'Supplier name', 'Purchase order',
+                'Part number', 'Part description', 'Part group description',
+                'Part net weight', 'Order quantity', 'Delivery date',
+                'Purchase price', 'Supplier delivery number', 'Received quantity',
+                'Date of receipt', 'Invoice date', 'Invoice quantity',
+                'Invoice amount', 'Line amount', 'Kg acquistati',
+            ]
+            default_vis = [c for c in _DEFAULT_DETAIL_COLS if c in all_available_cols]
 
-            with ctrl2:
+            # ---- RIGA 1: Mostra colonne + Ordina ----
+            rc1, rc2, rc3 = st.columns([2.8, 1.5, 1.2])
+            with rc1:
+                with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
+                    show_all_btn = st.checkbox("⭐ Tutte le colonne", value=False, key="pu_show_all")
+                    if show_all_btn:
+                        cols_to_display = all_available_cols
+                    else:
+                        cols_to_display = st.multiselect(
+                            "Seleziona colonne da visualizzare:",
+                            options=all_available_cols,
+                            default=[c for c in default_vis if c in all_available_cols],
+                            key="pu_cols_select"
+                        )
+                        if not cols_to_display:
+                            cols_to_display = default_vis if default_vis else all_available_cols
+
+            with rc2:
                 sort_col_pu = st.selectbox(
-                    "📊 Ordina per:", options=cols_to_display or all_available_cols,
+                    "📊 Ordina per:",
+                    options=cols_to_display or all_available_cols,
                     key="pu_sort_col"
                 )
-            with ctrl3:
+            with rc3:
                 sort_asc_pu = st.radio(
                     "Direzione:", ["⬆️ Cresc.", "⬇️ Decresc."],
                     horizontal=False, key="pu_sort_dir"
                 )
 
-            with st.expander("🔍 Filtri per Colonna (singolo / multiplo / range)", expanded=False):
-                st.caption("Seleziona valori per colonna. 'Tutti' = nessun filtro. Le colonne numeriche usano uno slider.")
+            # ---- RIGA 2: Filtri per Colonna (tutti multiselect con "Tutti") ----
+            with st.expander("🔍 Filtri per Colonna (singolo / multiplo)", expanded=False):
+                st.caption("Seleziona valori per colonna. 'Tutti' = nessun filtro. Colonne con troppi valori univoci (>500) non mostrano il filtro per prestazioni.")
                 df_detail_filtered = df_pu_global.copy()
-                filter_cols_list   = all_available_cols
-                ncols_per_row      = 4
-                rows_needed        = (len(filter_cols_list) + ncols_per_row - 1) // ncols_per_row
+                ncols_per_row = 4
+                rows_needed   = (len(all_available_cols) + ncols_per_row - 1) // ncols_per_row
 
                 for row_idx in range(rows_needed):
                     fcols = st.columns(ncols_per_row)
                     for col_idx in range(ncols_per_row):
                         item_idx = row_idx * ncols_per_row + col_idx
-                        if item_idx >= len(filter_cols_list):
+                        if item_idx >= len(all_available_cols):
                             break
-                        col_name = filter_cols_list[item_idx]
+                        col_name = all_available_cols[item_idx]
                         with fcols[col_idx]:
+                            # TUTTE LE COLONNE come multiselect con "Tutti"
+                            # (incluse numeriche e date — converte in stringa)
                             if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
-                                pass  # gestito dal filtro Periodo di Analisi
-                            elif pd.api.types.is_numeric_dtype(df_pu_global[col_name]):
-                                cmin = float(df_pu_global[col_name].min())
-                                cmax = float(df_pu_global[col_name].max())
-                                if cmin < cmax:
-                                    sel_range = st.slider(
-                                        col_name, min_value=cmin, max_value=cmax,
-                                        value=(cmin, cmax), key=f"pu_fn_{col_name}"
-                                    )
-                                    df_detail_filtered = df_detail_filtered[
-                                        (df_detail_filtered[col_name] >= sel_range[0]) &
-                                        (df_detail_filtered[col_name] <= sel_range[1])
-                                    ]
-                            else:
-                                unique_vals = sorted(
-                                    df_pu_global[col_name].dropna().astype(str).unique().tolist()
+                                # Per date mostra le date come stringa formattata
+                                unique_str = sorted(
+                                    df_pu_global[col_name].dropna()
+                                    .dt.strftime("%d/%m/%Y").unique().tolist()
                                 )
-                                if len(unique_vals) <= 300:
-                                    opts    = ["Tutti"] + unique_vals
-                                    sel_flt = st.multiselect(
-                                        col_name, options=opts, default=["Tutti"],
-                                        key=f"pu_fc_{col_name}"
-                                    )
-                                    if sel_flt and "Tutti" not in sel_flt:
+                            else:
+                                unique_str = sorted(
+                                    df_pu_global[col_name].dropna()
+                                    .astype(str).unique().tolist()
+                                )
+
+                            if len(unique_str) > 500:
+                                st.caption(f"{col_name}: troppi valori ({len(unique_str)}), usa barra di ricerca nella tabella")
+                            else:
+                                opts    = ["Tutti"] + unique_str
+                                sel_flt = st.multiselect(
+                                    label=col_name,
+                                    options=opts,
+                                    default=["Tutti"],
+                                    key=f"pu_f_{col_name}",
+                                    help=_COL_LEGEND.get(col_name, "")
+                                )
+                                if sel_flt and "Tutti" not in sel_flt:
+                                    if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
+                                        # Filtra convertendo la colonna in stringa dd/mm/yyyy
+                                        df_detail_filtered = df_detail_filtered[
+                                            df_detail_filtered[col_name].dt.strftime("%d/%m/%Y")
+                                            .isin(sel_flt)
+                                        ]
+                                    else:
                                         df_detail_filtered = df_detail_filtered[
                                             df_detail_filtered[col_name].astype(str).isin(sel_flt)
                                         ]
 
-            # Applica ordinamento
+            # ---- Applica ordinamento ----
             asc_flag = (sort_asc_pu == "⬆️ Cresc.")
             if sort_col_pu and sort_col_pu in df_detail_filtered.columns:
                 df_detail_filtered = df_detail_filtered.sort_values(
                     by=sort_col_pu, ascending=asc_flag
                 )
 
-            final_cols  = [c for c in cols_to_display if c in df_detail_filtered.columns]
-            df_final    = df_detail_filtered[final_cols] if final_cols else df_detail_filtered
+            final_cols = [c for c in cols_to_display if c in df_detail_filtered.columns]
+            df_final   = df_detail_filtered[final_cols] if final_cols else df_detail_filtered
 
-            st.caption(f"Righe: {len(df_final):,} / {len(df_pu_global):,} totali")
+            st.caption(f"Righe visualizzate: **{len(df_final):,}** / {len(df_pu_global):,} totali")
+
+            # Column config con help= per tooltip (appare su hover sull'icona ?)
+            col_cfg = {}
+            for c in all_available_cols:
+                tip = _COL_LEGEND.get(c, "")
+                if c == 'Purchase order date':
+                    col_cfg[c] = st.column_config.DateColumn("Data Ordine",    help=tip)
+                elif c == 'Delivery date':
+                    col_cfg[c] = st.column_config.DateColumn("Data Consegna",  help=tip)
+                elif c == 'Date of receipt':
+                    col_cfg[c] = st.column_config.DateColumn("Data Ricezione", help=tip)
+                elif c == 'Invoice date':
+                    col_cfg[c] = st.column_config.DateColumn("Data Fattura",   help=tip)
+                elif c == 'Invoice amount':
+                    col_cfg[c] = st.column_config.NumberColumn("Importo Fatt.", format="€ %.2f", help=tip)
+                elif c == 'Row amount':
+                    col_cfg[c] = st.column_config.NumberColumn("Importo Riga",  format="€ %.2f", help=tip)
+                elif c == 'Line amount':
+                    col_cfg[c] = st.column_config.NumberColumn("Importo Linea", format="€ %.2f", help=tip)
+                elif c == 'Line amount internal':
+                    col_cfg[c] = st.column_config.NumberColumn("Importo Linea Int.", format="€ %.2f", help=tip)
+                elif c == 'Kg acquistati':
+                    col_cfg[c] = st.column_config.NumberColumn("Kg Acquistati", format="%.2f", help=tip)
+                elif c == 'Order quantity':
+                    col_cfg[c] = st.column_config.NumberColumn("Qta Ord.",      format="%.0f", help=tip)
+                elif c == 'Received quantity':
+                    col_cfg[c] = st.column_config.NumberColumn("Qta Ricevuta",  format="%.0f", help=tip)
+                elif c == 'Invoice quantity':
+                    col_cfg[c] = st.column_config.NumberColumn("Qta Fatt.",     format="%.0f", help=tip)
+                elif c == 'Purchase price':
+                    col_cfg[c] = st.column_config.NumberColumn("Prezzo Acq.",   format="€ %.4f", help=tip)
+                elif c == 'Part net weight':
+                    col_cfg[c] = st.column_config.NumberColumn("Peso Netto kg", format="%.4f", help=tip)
+                elif c == 'Exchange rate':
+                    col_cfg[c] = st.column_config.NumberColumn("Cambio",        format="%.4f", help=tip)
+                elif tip:
+                    col_cfg[c] = st.column_config.TextColumn(c, help=tip)
+
             st.dataframe(
                 df_final,
-                column_config={
-                    'Purchase order date': st.column_config.DateColumn("Data Ordine"),
-                    'Delivery date':       st.column_config.DateColumn("Data Consegna"),
-                    'Date of receipt':     st.column_config.DateColumn("Data Ricezione"),
-                    'Invoice date':        st.column_config.DateColumn("Data Fattura"),
-                    'Invoice amount':      st.column_config.NumberColumn("Importo Fatt.",  format="€ %.2f"),
-                    'Row amount':          st.column_config.NumberColumn("Importo Riga",   format="€ %.2f"),
-                    'Line amount':         st.column_config.NumberColumn("Importo Linea",  format="€ %.2f"),
-                    'Kg acquistati':       st.column_config.NumberColumn("Kg Acquistati",  format="%.2f"),
-                    'Order quantity':      st.column_config.NumberColumn("Qta Ord.",        format="%.0f"),
-                    'Received quantity':   st.column_config.NumberColumn("Qta Ricevuta",   format="%.0f"),
-                    'Invoice quantity':    st.column_config.NumberColumn("Qta Fatt.",       format="%.0f"),
-                    'Purchase price':      st.column_config.NumberColumn("Prezzo Acq.",    format="€ %.4f"),
-                    'Part net weight':     st.column_config.NumberColumn("Peso Netto kg",  format="%.4f"),
-                },
-                use_container_width=True, height=500, hide_index=True
+                column_config=col_cfg,
+                use_container_width=True, height=520, hide_index=True
             )
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
