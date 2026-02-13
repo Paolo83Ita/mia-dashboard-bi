@@ -11,10 +11,10 @@ import numpy as np
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v42.0 - KPI Fix + Detail Table + AI Full Context)
+# 1. CONFIGURAZIONE & STILE (v43.0 - Settings persistenti, KPI fix legenda, Date filter Acquisti)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v42.0",
+    page_title="EITA Analytics Pro v43.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -474,15 +474,13 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # Costruisce il contesto dati completo per Gemini (nessun limite di righe)
+        # Costruisce il contesto dati COMPLETO per Gemini (nessun limite di righe)
         context_text = ""
         if context_df is not None and not context_df.empty:
-            # Statistiche descrittive (sempre incluse — utili per domande aggregative)
             try:
                 stats_str = context_df.describe(include='all').to_string()
             except Exception:
                 stats_str = "Statistiche non disponibili"
-
             context_text = (
                 "\n\n=== CONTESTO DATI: " + context_label + " ===\n"
                 + f"Totale righe: {len(context_df)} | "
@@ -633,6 +631,40 @@ if page == "📊 Vendite & Fatturazione":
         for f_col, vals in active_filters.items():
             if f_col in df_global.columns:
                 df_global = df_global[df_global[f_col].astype(str).isin(vals)]
+
+        # --- Salva / Carica Settings Vendite ---
+        with st.sidebar.expander("💾 Impostazioni Sessione", expanded=False):
+            if st.button("💾 Salva impostazioni correnti", key="btn_save_sales"):
+                st.session_state["sales_settings"] = {
+                    "col_entity":   col_entity,
+                    "col_customer": col_customer,
+                    "col_prod":     col_prod,
+                    "col_euro":     col_euro,
+                    "col_kg":       col_kg,
+                    "col_cartons":  col_cartons,
+                    "col_data":     col_data,
+                    "sel_ent":      sel_ent,
+                }
+                st.success("✅ Salvato!")
+            if st.button("🔄 Reset impostazioni", key="btn_reset_sales"):
+                for k in ["sales_settings", "sales_adv_filters"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+            # Esporta / Importa
+            st.download_button(
+                "📤 Esporta settings",
+                data=json.dumps(st.session_state.get("sales_settings", {}), indent=2, default=str),
+                file_name="eita_sales_settings.json", mime="application/json",
+                key="btn_exp_sales"
+            )
+            up_sales = st.file_uploader("📥 Importa settings", type="json", key="sales_cfg_up")
+            if up_sales:
+                try:
+                    st.session_state["sales_settings"] = json.loads(up_sales.read())
+                    st.success("Importato! Ricarica la pagina.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Errore: {ex}")
 
         st.title(f"Performance Overview: {sel_ent or 'Global'}")
 
@@ -955,10 +987,39 @@ elif page == "🎁 Analisi Customer Promo":
         if apply_promo_filters:
             st.session_state['promo_adv_stati']   = staged_stati
             st.session_state['promo_adv_filters'] = staged_adv_p
-        # Prima apertura pagina → applica i default di stato senza richiedere Submit
         elif 'promo_adv_stati' not in st.session_state:
-            st.session_state['promo_adv_stati']   = staged_stati  # default pre-selezionati
+            st.session_state['promo_adv_stati']   = staged_stati
             st.session_state['promo_adv_filters'] = {}
+
+        # --- Salva / Carica Settings Promo ---
+        with st.sidebar.expander("💾 Impostazioni Sessione", expanded=False):
+            if st.button("💾 Salva impostazioni correnti", key="btn_save_promo"):
+                st.session_state["promo_settings"] = {
+                    "p_div":    p_div,    "p_status": p_status,
+                    "p_cust":   p_cust,   "p_prod":   p_prod,
+                    "p_qty_f":  p_qty_f,  "p_qty_a":  p_qty_a,
+                    "p_start":  p_start,  "p_type":   p_type,
+                    "p_week":   p_week,
+                }
+                st.success("✅ Salvato!")
+            if st.button("🔄 Reset impostazioni", key="btn_reset_promo"):
+                for k in ["promo_settings", "promo_adv_stati", "promo_adv_filters"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+            st.download_button(
+                "📤 Esporta settings",
+                data=json.dumps(st.session_state.get("promo_settings", {}), indent=2, default=str),
+                file_name="eita_promo_settings.json", mime="application/json",
+                key="btn_exp_promo"
+            )
+            up_promo = st.file_uploader("📥 Importa settings", type="json", key="promo_cfg_up")
+            if up_promo:
+                try:
+                    st.session_state["promo_settings"] = json.loads(up_promo.read())
+                    st.success("Importato! Ricarica la pagina.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Errore: {ex}")
 
         active_stati   = st.session_state['promo_adv_stati']
         active_adv_p   = st.session_state['promo_adv_filters']
@@ -1171,10 +1232,6 @@ elif page == "🎁 Analisi Customer Promo":
 elif page == "📦 Analisi Acquisti":
     st.title("📦 Analisi Acquisti (Purchase History)")
 
-    # FIX CRITICO: df_purch_processed inizializzato a None PRIMA del blocco
-    # condizionale. Nella v38.2, era definito solo dentro
-    # `if df_purch_raw is not None:`, quindi se il download falliva →
-    # NameError: name 'df_purch_processed' is not defined alla riga successiva.
     df_purch_processed = None
 
     if files:
@@ -1192,92 +1249,187 @@ elif page == "📦 Analisi Acquisti":
             if df_purch_raw is not None:
                 df_purch_processed = smart_analyze_and_clean(df_purch_raw, "Purchase")
 
-                # FIX KPI: calcolo Kg acquistati corretto tramite colonne reali del file
-                # Priorità 1: Invoice quantity × Part net weight (colonne native del file acquisti)
-                # Priorità 2: Order quantity × Part net weight
-                # Fallback: Row amount / Purchase price (approssimazione precedente)
-                if ('Invoice quantity' in df_purch_processed.columns and
-                        'Part net weight' in df_purch_processed.columns):
-                    df_purch_processed['Kg acquistati'] = (
-                        df_purch_processed['Invoice quantity'].fillna(0) *
-                        df_purch_processed['Part net weight'].fillna(0)
-                    )
-                elif ('Order quantity' in df_purch_processed.columns and
-                        'Part net weight' in df_purch_processed.columns):
-                    df_purch_processed['Kg acquistati'] = (
-                        df_purch_processed['Order quantity'].fillna(0) *
-                        df_purch_processed['Part net weight'].fillna(0)
-                    )
-                elif all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
-                    df_purch_processed['Kg acquistati'] = np.where(
-                        df_purch_processed['Purchase price'] > 0,
-                        df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
-                        0
-                    )
-                else:
-                    df_purch_processed['Kg acquistati'] = 0
+                # LEGENDA: "Kg acquistati = costo della linea / prezzo €/kg"
+                # = Line amount / Purchase price
+                if 'Kg acquistati' not in df_purch_processed.columns:
+                    if all(c in df_purch_processed.columns for c in ['Line amount', 'Purchase price']):
+                        df_purch_processed['Kg acquistati'] = np.where(
+                            df_purch_processed['Purchase price'] > 0,
+                            df_purch_processed['Line amount'] / df_purch_processed['Purchase price'],
+                            0
+                        )
+                    elif all(c in df_purch_processed.columns for c in ['Row amount', 'Purchase price']):
+                        df_purch_processed['Kg acquistati'] = np.where(
+                            df_purch_processed['Purchase price'] > 0,
+                            df_purch_processed['Row amount'] / df_purch_processed['Purchase price'],
+                            0
+                        )
+                    else:
+                        df_purch_processed['Kg acquistati'] = 0
     else:
         st.error("Nessun file trovato.")
 
-    # Ora il check è sicuro — df_purch_processed è sempre definita (None o DataFrame)
     if df_purch_processed is not None:
         guesses_pu  = guess_column_role(df_purch_processed, "Purchase")
-        all_cols_pu = df_purch_processed.columns.tolist()
+        # Colonne da nascondere (dalla legenda: Part number old = vecchi codici, non mostrare nei filtri)
+        HIDDEN_COLS_PU = {'Part number old'}
+        all_cols_pu    = [c for c in df_purch_processed.columns if c not in HIDDEN_COLS_PU]
+
+        # --- SETTINGS: carica impostazioni salvate ---
+        pu_saved = st.session_state.get("pu_settings", {})
 
         with st.sidebar.expander("⚙️ Configurazione Colonne Acquisti", expanded=False):
-            pu_div    = st.selectbox("Division",        all_cols_pu, index=set_idx(guesses_pu['division'],   all_cols_pu))
-            pu_supp   = st.selectbox("Supplier Name",   all_cols_pu, index=set_idx(guesses_pu['supplier'],   all_cols_pu))
-            pu_date   = st.selectbox("Order Date",      all_cols_pu, index=set_idx(guesses_pu['order_date'], all_cols_pu))
-            pu_amount = st.selectbox("Invoice Amount",  all_cols_pu, index=set_idx(guesses_pu['amount'],     all_cols_pu))
-            pu_kg     = st.selectbox("Kg Acquistati",   all_cols_pu, index=set_idx(guesses_pu['kg'],         all_cols_pu))
-            pu_prod   = st.selectbox("Part Description",all_cols_pu, index=set_idx(guesses_pu['product'],    all_cols_pu))
-            pu_cat    = st.selectbox("Part Group",      all_cols_pu, index=set_idx(guesses_pu['category'],   all_cols_pu))
+            pu_div    = st.selectbox("Division",         all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_div",    guesses_pu.get('division')),   all_cols_pu))
+            pu_supp   = st.selectbox("Supplier Name",    all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_supp",   guesses_pu.get('supplier')),   all_cols_pu))
+            pu_date   = st.selectbox("Order Date",       all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_date",   guesses_pu.get('order_date')), all_cols_pu))
+            pu_amount = st.selectbox("Invoice Amount",   all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_amount", guesses_pu.get('amount')),     all_cols_pu))
+            pu_kg     = st.selectbox("Kg Acquistati",    all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_kg",     guesses_pu.get('kg')),         all_cols_pu))
+            pu_prod   = st.selectbox("Part Description", all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_prod",   guesses_pu.get('product')),    all_cols_pu))
+            pu_cat    = st.selectbox("Part Group",       all_cols_pu,
+                         index=set_idx(pu_saved.get("pu_cat",    guesses_pu.get('category')),   all_cols_pu))
 
         df_pu_global = df_purch_processed.copy()
         st.sidebar.markdown("### 🔍 Filtri Acquisti")
 
+        # --- Filtro Division (con default 021, modificabile) ---
         if pu_div in df_pu_global.columns:
             divs = sorted(df_pu_global[pu_div].astype(str).unique())
-            default_div_idx = 0
-            if "021" in divs: default_div_idx = divs.index("021")
-            elif "21"  in divs: default_div_idx = divs.index("21")
+            saved_div = pu_saved.get("sel_div_pu")
+            if saved_div and saved_div in divs:
+                default_div_idx = divs.index(saved_div)
+            elif "021" in divs:
+                default_div_idx = divs.index("021")
+            elif "21" in divs:
+                default_div_idx = divs.index("21")
+            else:
+                default_div_idx = 0
             sel_div_pu   = st.sidebar.selectbox("Divisione", divs, index=default_div_idx)
             df_pu_global = df_pu_global[df_pu_global[pu_div].astype(str) == sel_div_pu]
+        else:
+            sel_div_pu = None
 
+        # --- NUOVO: Periodo di Analisi (come nelle altre pagine) ---
         if pu_date in df_pu_global.columns and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
-            min_d, max_d = df_pu_global[pu_date].min(), df_pu_global[pu_date].max()
-            if pd.notnull(min_d):
+            _min_d = df_pu_global[pu_date].min()
+            _max_d = df_pu_global[pu_date].max()
+            if pd.notnull(_min_d) and pd.notnull(_max_d):
+                # Usa date salvate se disponibili, altrimenti min/max del dataset
+                saved_start = pu_saved.get("d_start_pu")
+                saved_end   = pu_saved.get("d_end_pu")
+                def_start   = datetime.date.fromisoformat(saved_start) if saved_start else _min_d.date()
+                def_end     = datetime.date.fromisoformat(saved_end)   if saved_end   else _max_d.date()
+                # Clamp alle date disponibili nel dataset corrente
+                def_start = max(def_start, _min_d.date())
+                def_end   = min(def_end,   _max_d.date())
                 d_start_pu, d_end_pu = safe_date_input(
-                    "Periodo Ordini", min_d.date(), max_d.date(), key="purch_date"
+                    "Periodo di Analisi", def_start, def_end, key="purch_date"
                 )
                 df_pu_global = df_pu_global[
                     (df_pu_global[pu_date].dt.date >= d_start_pu) &
                     (df_pu_global[pu_date].dt.date <= d_end_pu)
                 ]
+            else:
+                d_start_pu = d_end_pu = None
+        else:
+            d_start_pu = d_end_pu = None
 
+        # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
-            all_suppliers = sorted(df_pu_global[pu_supp].dropna().astype(str).unique())
-            sel_suppliers = st.sidebar.multiselect("Fornitori", all_suppliers)
-            if sel_suppliers:
+            all_suppliers = ["Tutti"] + sorted(df_pu_global[pu_supp].dropna().astype(str).unique())
+            saved_supps   = pu_saved.get("sel_suppliers", ["Tutti"])
+            # Ripristina solo i fornitori ancora presenti nel dataset corrente
+            valid_saved = [s for s in saved_supps if s in all_suppliers]
+            if not valid_saved:
+                valid_saved = ["Tutti"]
+            sel_suppliers = st.sidebar.multiselect("Fornitori", all_suppliers, default=valid_saved)
+            if sel_suppliers and "Tutti" not in sel_suppliers:
                 df_pu_global = df_pu_global[df_pu_global[pu_supp].astype(str).isin(sel_suppliers)]
+        else:
+            sel_suppliers = ["Tutti"]
 
-        # Aggiorna contesto AI con i dati acquisti filtrati
+        # --- Salva / Carica Settings ---
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("#### 💾 Salva Impostazioni")
+        c_save, c_reset = st.sidebar.columns(2)
+        with c_save:
+            if st.button("💾 Salva", key="btn_save_pu", use_container_width=True,
+                         help="Salva filtri e mappatura colonne per questa sessione"):
+                st.session_state["pu_settings"] = {
+                    "pu_div":       pu_div,
+                    "pu_supp":      pu_supp,
+                    "pu_date":      pu_date,
+                    "pu_amount":    pu_amount,
+                    "pu_kg":        pu_kg,
+                    "pu_prod":      pu_prod,
+                    "pu_cat":       pu_cat,
+                    "sel_div_pu":   sel_div_pu,
+                    "sel_suppliers":sel_suppliers,
+                    "d_start_pu":   d_start_pu.isoformat()  if d_start_pu else None,
+                    "d_end_pu":     d_end_pu.isoformat()    if d_end_pu   else None,
+                }
+                st.sidebar.success("Impostazioni salvate ✅")
+        with c_reset:
+            if st.button("🔄 Reset", key="btn_reset_pu", use_container_width=True,
+                         help="Ripristina impostazioni di default"):
+                if "pu_settings" in st.session_state:
+                    del st.session_state["pu_settings"]
+                st.rerun()
+
+        # Importa/Esporta settings come JSON (persistenza cross-sessione)
+        with st.sidebar.expander("📤 Esporta / 📥 Importa Impostazioni", expanded=False):
+            current_cfg = st.session_state.get("pu_settings", {})
+            st.download_button(
+                "📤 Esporta settings (.json)",
+                data=json.dumps(current_cfg, indent=2, default=str),
+                file_name="eita_purchase_settings.json",
+                mime="application/json",
+                key="btn_export_settings"
+            )
+            uploaded_cfg = st.file_uploader(
+                "📥 Importa settings (.json)", type="json", key="settings_uploader"
+            )
+            if uploaded_cfg is not None:
+                try:
+                    loaded = json.loads(uploaded_cfg.read())
+                    st.session_state["pu_settings"] = loaded
+                    st.success("Impostazioni importate! Ricarica la pagina.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Errore importazione: {ex}")
+
+        # Aggiorna contesto AI
         if not df_pu_global.empty:
             st.session_state["ai_context_df"]    = df_pu_global
             st.session_state["ai_context_label"] = "Acquisti"
 
         if not df_pu_global.empty:
-            tot_invoice_pu = df_pu_global[pu_amount].sum() if pu_amount else 0
-            tot_kg_pu      = df_pu_global[pu_kg].sum()     if pu_kg     else 0
+            # KPI calcolati sul df filtrato (reattivi a tutti i filtri)
+            tot_invoice_pu = df_pu_global[pu_amount].sum() if pu_amount in df_pu_global.columns else 0
+            tot_kg_pu      = df_pu_global[pu_kg].sum()     if pu_kg     in df_pu_global.columns else 0
             tot_orders_pu  = (df_pu_global['Purchase order'].nunique()
                               if 'Purchase order' in df_pu_global.columns else 0)
+            # Prezzo medio = Invoice amount / Kg acquistati (dalla legenda)
             avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
 
             render_kpi_cards([
-                {"title": "💸 Spesa Totale",    "value": f"€ {tot_invoice_pu:,.0f}", "subtitle": "Totale Fatturato (Invoice Amount)"},
-                {"title": "⚖️ Volume Totale",   "value": f"{tot_kg_pu:,.0f} Kg",     "subtitle": "Kg Acquistati (Calcolati/Reali)"},
-                {"title": "📦 Ordini Totali",   "value": str(tot_orders_pu),          "subtitle": "Numero Ordini Acquisto"},
-                {"title": "🏷️ Prezzo Medio",   "value": f"€ {avg_price_kg:.2f}",    "subtitle": "Prezzo medio al Kg"},
+                {"title": "💸 Spesa Totale",
+                 "value":    f"€ {tot_invoice_pu:,.0f}",
+                 "subtitle": "Invoice Amount (importo fatturato)"},
+                {"title": "⚖️ Volume Totale",
+                 "value":    f"{tot_kg_pu:,.0f} Kg",
+                 "subtitle": "Kg Acquistati (Line amount / Purchase price)"},
+                {"title": "📦 Ordini Totali",
+                 "value":    str(tot_orders_pu),
+                 "subtitle": "N° ordini di acquisto univoci"},
+                {"title": "🏷️ Prezzo Medio",
+                 "value":    f"€ {avg_price_kg:.4f}",
+                 "subtitle": "€ per Kg (Invoice amount / Kg acq.)"},
             ], card_class="purch-card")
 
             st.divider()
@@ -1285,7 +1437,6 @@ elif page == "📦 Analisi Acquisti":
 
             with c1:
                 st.subheader("📅 Trend Spesa nel Tempo")
-                # Riconversione difensiva della colonna data (già gestita in smart_analyze)
                 if pu_date in df_pu_global.columns:
                     if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
                         df_pu_global[pu_date] = pd.to_datetime(
@@ -1299,8 +1450,7 @@ elif page == "📦 Analisi Acquisti":
                     try:
                         trend_pu = (df_pu_global
                                     .groupby(pd.Grouper(key=pu_date, freq='ME'))[pu_amount]
-                                    .sum()
-                                    .reset_index())
+                                    .sum().reset_index())
                         fig_trend = px.line(trend_pu, x=pu_date, y=pu_amount, markers=True)
                         fig_trend.update_layout(height=400, xaxis_title="", yaxis_title="€ Fatturato")
                         st.plotly_chart(fig_trend, use_container_width=True)
@@ -1311,13 +1461,11 @@ elif page == "📦 Analisi Acquisti":
 
             with c2:
                 st.subheader("🏆 Top Fornitori (per Spesa)")
-                if pu_supp and pu_amount:
+                if pu_supp in df_pu_global.columns and pu_amount in df_pu_global.columns:
                     top_supp = (df_pu_global
                                 .groupby(pu_supp)[pu_amount]
-                                .sum()
-                                .sort_values(ascending=False)
-                                .head(10)
-                                .reset_index())
+                                .sum().sort_values(ascending=False)
+                                .head(10).reset_index())
                     fig_supp = px.bar(
                         top_supp, x=pu_amount, y=pu_supp, orientation='h',
                         color=pu_amount, color_continuous_scale='Viridis'
@@ -1328,13 +1476,19 @@ elif page == "📦 Analisi Acquisti":
                     )
                     st.plotly_chart(fig_supp, use_container_width=True)
 
+            # --- DETTAGLIO RIGHE ACQUISTO (colonne sceglibili, ordinabili, filtrabili) ---
             st.subheader("📋 Dettaglio Righe Acquisto")
 
-            all_available_cols = df_pu_global.columns.tolist()
+            # Colonne disponibili (escluso Part number old come da legenda)
+            all_available_cols = [c for c in df_pu_global.columns if c not in HIDDEN_COLS_PU]
 
-            # --- Selettore colonne + ordinamento ---
             ctrl1, ctrl2, ctrl3 = st.columns([3, 1.5, 1.2])
             with ctrl1:
+                default_vis_cols = [c for c in [
+                    'Purchase order', 'Purchase order date', 'Supplier name',
+                    'Part description', 'Part group description',
+                    'Order quantity', 'Received quantity', 'Invoice amount', 'Kg acquistati'
+                ] if c in all_available_cols]
                 sel_display_cols = st.multiselect(
                     "📌 Colonne da visualizzare:",
                     options=["⭐ TUTTE"] + all_available_cols,
@@ -1344,52 +1498,44 @@ elif page == "📦 Analisi Acquisti":
                 cols_to_display = (
                     all_available_cols
                     if not sel_display_cols or "⭐ TUTTE" in sel_display_cols
-                    else sel_display_cols
+                    else [c for c in sel_display_cols if c in all_available_cols]
                 )
+
             with ctrl2:
                 sort_col_pu = st.selectbox(
-                    "📊 Ordina per:",
-                    options=cols_to_display,
+                    "📊 Ordina per:", options=cols_to_display or all_available_cols,
                     key="pu_sort_col"
                 )
             with ctrl3:
-                sort_dir_pu = st.radio(
-                    "Direzione:",
-                    ["⬆️ Cresc.", "⬇️ Decresc."],
-                    horizontal=False,
-                    key="pu_sort_dir"
+                sort_asc_pu = st.radio(
+                    "Direzione:", ["⬆️ Cresc.", "⬇️ Decresc."],
+                    horizontal=False, key="pu_sort_dir"
                 )
 
-            # --- Filtri per colonna ---
-            with st.expander("🔍 Filtri per Colonna (singolo / multiplo)", expanded=False):
-                st.caption("Seleziona uno o più valori per colonna. 'Tutti' = nessun filtro attivo.")
+            with st.expander("🔍 Filtri per Colonna (singolo / multiplo / range)", expanded=False):
+                st.caption("Seleziona valori per colonna. 'Tutti' = nessun filtro. Le colonne numeriche usano uno slider.")
                 df_detail_filtered = df_pu_global.copy()
-
-                # Raggruppa le colonne in righe da 4 per leggibilità
-                filter_cols_list = all_available_cols
-                num_filter_cols  = min(4, len(filter_cols_list))
-                rows_needed = (len(filter_cols_list) + num_filter_cols - 1) // num_filter_cols
+                filter_cols_list   = all_available_cols
+                ncols_per_row      = 4
+                rows_needed        = (len(filter_cols_list) + ncols_per_row - 1) // ncols_per_row
 
                 for row_idx in range(rows_needed):
-                    fcols = st.columns(num_filter_cols)
-                    for col_idx in range(num_filter_cols):
-                        item_idx = row_idx * num_filter_cols + col_idx
+                    fcols = st.columns(ncols_per_row)
+                    for col_idx in range(ncols_per_row):
+                        item_idx = row_idx * ncols_per_row + col_idx
                         if item_idx >= len(filter_cols_list):
                             break
                         col_name = filter_cols_list[item_idx]
                         with fcols[col_idx]:
                             if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
-                                # Filtro data: range slider
-                                pass  # già filtrato dai filtri globali in sidebar
+                                pass  # gestito dal filtro Periodo di Analisi
                             elif pd.api.types.is_numeric_dtype(df_pu_global[col_name]):
-                                col_min = float(df_pu_global[col_name].min())
-                                col_max = float(df_pu_global[col_name].max())
-                                if col_min < col_max:
+                                cmin = float(df_pu_global[col_name].min())
+                                cmax = float(df_pu_global[col_name].max())
+                                if cmin < cmax:
                                     sel_range = st.slider(
-                                        f"{col_name}",
-                                        min_value=col_min, max_value=col_max,
-                                        value=(col_min, col_max),
-                                        key=f"pu_filter_num_{col_name}"
+                                        col_name, min_value=cmin, max_value=cmax,
+                                        value=(cmin, cmax), key=f"pu_fn_{col_name}"
                                     )
                                     df_detail_filtered = df_detail_filtered[
                                         (df_detail_filtered[col_name] >= sel_range[0]) &
@@ -1399,49 +1545,50 @@ elif page == "📦 Analisi Acquisti":
                                 unique_vals = sorted(
                                     df_pu_global[col_name].dropna().astype(str).unique().tolist()
                                 )
-                                if len(unique_vals) <= 200:  # evita multiselect enormi
+                                if len(unique_vals) <= 300:
                                     opts    = ["Tutti"] + unique_vals
                                     sel_flt = st.multiselect(
-                                        f"{col_name}",
-                                        options=opts,
-                                        default=["Tutti"],
-                                        key=f"pu_filter_cat_{col_name}"
+                                        col_name, options=opts, default=["Tutti"],
+                                        key=f"pu_fc_{col_name}"
                                     )
                                     if sel_flt and "Tutti" not in sel_flt:
                                         df_detail_filtered = df_detail_filtered[
                                             df_detail_filtered[col_name].astype(str).isin(sel_flt)
                                         ]
 
-            # --- Applica ordinamento e selezione colonne ---
-            sort_ascending = (sort_dir_pu == "⬆️ Cresc.")
+            # Applica ordinamento
+            asc_flag = (sort_asc_pu == "⬆️ Cresc.")
             if sort_col_pu and sort_col_pu in df_detail_filtered.columns:
                 df_detail_filtered = df_detail_filtered.sort_values(
-                    by=sort_col_pu, ascending=sort_ascending
+                    by=sort_col_pu, ascending=asc_flag
                 )
 
-            cols_to_display = [c for c in cols_to_display if c in df_detail_filtered.columns]
-            df_final_detail  = df_detail_filtered[cols_to_display] if cols_to_display else df_detail_filtered
+            final_cols  = [c for c in cols_to_display if c in df_detail_filtered.columns]
+            df_final    = df_detail_filtered[final_cols] if final_cols else df_detail_filtered
 
-            st.caption(f"Righe visualizzate: {len(df_final_detail):,} / {len(df_pu_global):,}")
+            st.caption(f"Righe: {len(df_final):,} / {len(df_pu_global):,} totali")
             st.dataframe(
-                df_final_detail,
+                df_final,
                 column_config={
                     'Purchase order date': st.column_config.DateColumn("Data Ordine"),
-                    'Invoice amount':      st.column_config.NumberColumn("Importo Fatt.", format="€ %.2f"),
-                    'Kg acquistati':       st.column_config.NumberColumn("Kg Calc.",      format="%.0f"),
-                    'Order quantity':      st.column_config.NumberColumn("Qta Ord.",       format="%.0f"),
-                    'Received quantity':   st.column_config.NumberColumn("Qta Ricevuta",   format="%.0f"),
-                    'Part net weight':     st.column_config.NumberColumn("Peso Netto",      format="%.4f"),
-                    'Purchase price':      st.column_config.NumberColumn("Prezzo Acq.",    format="€ %.4f"),
+                    'Delivery date':       st.column_config.DateColumn("Data Consegna"),
+                    'Date of receipt':     st.column_config.DateColumn("Data Ricezione"),
+                    'Invoice date':        st.column_config.DateColumn("Data Fattura"),
+                    'Invoice amount':      st.column_config.NumberColumn("Importo Fatt.",  format="€ %.2f"),
                     'Row amount':          st.column_config.NumberColumn("Importo Riga",   format="€ %.2f"),
+                    'Line amount':         st.column_config.NumberColumn("Importo Linea",  format="€ %.2f"),
+                    'Kg acquistati':       st.column_config.NumberColumn("Kg Acquistati",  format="%.2f"),
+                    'Order quantity':      st.column_config.NumberColumn("Qta Ord.",        format="%.0f"),
+                    'Received quantity':   st.column_config.NumberColumn("Qta Ricevuta",   format="%.0f"),
+                    'Invoice quantity':    st.column_config.NumberColumn("Qta Fatt.",       format="%.0f"),
+                    'Purchase price':      st.column_config.NumberColumn("Prezzo Acq.",    format="€ %.4f"),
+                    'Part net weight':     st.column_config.NumberColumn("Peso Netto kg",  format="%.4f"),
                 },
-                use_container_width=True,
-                height=500,
-                hide_index=True
+                use_container_width=True, height=500, hide_index=True
             )
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
-                data=convert_df_to_excel(df_final_detail),
+                data=convert_df_to_excel(df_final),
                 file_name=f"Report_Acquisti_{datetime.date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
