@@ -11,10 +11,10 @@ import numpy as np
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v41.1 - Fixed Gemini Model Name & Quota Handling)
+# 1. CONFIGURAZIONE & STILE (v41.2 - Fixed Gemini Model to gemini-2.5-flash)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v41.1",
+    page_title="EITA Analytics Pro v41.2",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -422,10 +422,10 @@ def _get_gemini_client():
             return None, "Secret 'gemini_api_key' non trovato"
         genai.configure(api_key=api_key)
         
-        # FIX: Cambiato model_name da "gemini-2.0-flash" (non valido) a "gemini-1.5-flash" (modello valido e efficiente).
-        #      Questo evita l'errore 429 quota exceeded per modello inesistente.
+        # FIX: Cambiato model_name da "gemini-1.5-flash" (non valido/deprecato) a "gemini-2.5-flash" (modello stabile attuale per generateContent).
+        #      Se persiste errore, prova "gemini-2.5-flash-latest" o verifica su https://ai.google.dev/gemini-api/docs/models.
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",  # Modello corretto: "gemini-1.5-flash" (leggero, adatto per chat/data analysis)
+            model_name="gemini-2.5-flash",  # Modello corretto e stabile
             system_instruction=(
                 "Sei un assistente dati esperto di business intelligence. "
                 "Aiuti l'utente a interpretare dati aziendali di vendita, promozioni e acquisti. "
@@ -502,7 +502,7 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             response = chat.send_message(full_prompt)
             answer = response.text
 
-            # FIX AGGIUNTIVO: Logga l'uso dei token per monitorare la quota (opzionale, per debug)
+            # Logga l'uso dei token per monitorare quota
             if hasattr(response, 'usage_metadata'):
                 st.sidebar.info(f"Token usati: Input {response.usage_metadata.prompt_token_count}, Output {response.usage_metadata.candidates_token_count}")
 
@@ -515,18 +515,6 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             )
             st.rerun()
 
-        except genai.types.generation_types.StopCandidateException as e:
-            # FIX AGGIUNTIVO: Gestione specifica per errori quota (429) o altri stop.
-            #         Mostra messaggio user-friendly con link per upgrade.
-            if "429" in str(e):
-                st.sidebar.error(
-                    "Errore Gemini: Quota superata. Controlla il tuo piano e i dettagli di billing. "
-                    "Per info: https://ai.google.dev/gemini-api/docs/rate-limits. "
-                    "Monitora l'uso: https://ai.dev/rate-limit. "
-                    "Suggerimento: Passa a un tier pagato per limiti più alti."
-                )
-            else:
-                st.sidebar.error(f"Errore Gemini: {e}")
         except Exception as e:
             st.sidebar.error(f"Errore Gemini: {e}")
 
@@ -1063,7 +1051,7 @@ elif page == "🎁 Analisi Customer Promo":
                                 color_discrete_map={
                                     'In Promozione': '#FF6B6B',
                                     'Vendita Normale': '#4ECDC4'}
-                                )
+                            )
                             fig_p.update_traces(textposition='inside', textinfo='percent+label')
                             fig_p.update_layout(showlegend=True, margin=dict(l=20, r=20, t=20, b=20))
                             st.plotly_chart(fig_p, use_container_width=True)
