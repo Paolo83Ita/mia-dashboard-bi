@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v60.0 - Dedup risposta AI, periodo nel contesto, divieto disclaimer anno/ripetizioni)
+# 1. CONFIGURAZIONE & STILE (v61.0 - BOTTOM aggregazione, indice prodotti fuzzy, fix copia con st.code nativo)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v60.0",
+    page_title="EITA Analytics Pro v61.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -627,8 +627,13 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
    Scrivi ogni concetto UNA SOLA VOLTA. Concludi la risposta dopo l'ultima informazione utile.
 
 5. Per "top N clienti/prodotti/fornitori" → leggi la tabella TOP 15 corrispondente.
-6. Per "chi ha comprato X?" → leggi TOP CLIENTI per PRODOTTO.
-7. Per "cosa ha comprato il cliente Y?" → leggi TOP PRODOTTI per CLIENTE.
+6. RICERCA PRODOTTI: usa l'ELENCO COMPLETO PRODOTTI per trovare il nome esatto.
+   Se l'utente scrive "selection" cerca nell'elenco il prodotto che contiene "SELECTION".
+   Poi cerca quel prodotto esatto nella sezione TOP E BOTTOM.
+7. Per "chi ha comprato di PIÙ X?" → leggi riga "↑ TOP" del prodotto X.
+8. Per "chi ha fatturato di MENO / comprato di meno X?" → leggi riga "↓ BOTTOM" del prodotto X.
+   La riga MINIMO o BOTTOM indica il cliente con il fatturato più basso per quel prodotto.
+9. Per "cosa ha comprato di più/meno il cliente Y?" → leggi TOP E BOTTOM PRODOTTI per CLIENTE.
 8. Per "trend/andamento" → leggi TREND MENSILE.
 9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
 10. Usa tabelle Markdown per confronti multi-riga.
@@ -1009,55 +1014,87 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
         if len("\n".join(parts)) > 3500:
             break  # limite token
 
-    # --- Cross: TOP CLIENTI per ogni PRODOTTO ---
-    # Risponde a: "Chi ha comprato più KALTBACH CREMOSO?"
+    # --- Indice completo prodotti (per fuzzy matching AI) ---
+    # ESSENZIALE: l'AI può fare fuzzy match su "selection" → "SELECTION XXX YYY"
+    if col_prodotto:
+        try:
+            all_prods = sorted(df[col_prodotto].dropna().astype(str).unique().tolist())
+            parts.append(f"\nELENCO COMPLETO PRODOTTI ({len(all_prods)} totali):")
+            parts.append(", ".join(all_prods))
+        except Exception:
+            pass
+
+    # --- Cross: TOP + BOTTOM CLIENTI per ogni PRODOTTO ---
+    # TOP → risponde a: "Chi ha comprato di PIÙ X?"
+    # BOTTOM → risponde a: "Chi ha comprato di MENO X?" / "chi ha fatturato meno?"
     if col_cliente and col_prodotto and val_cols:
         try:
-            # Prendi i top 12 prodotti per importo
-            top_prods = (df.groupby(col_prodotto, observed=True)[val_cols[0]]
-                          .sum().sort_values(ascending=False).head(12).index.tolist())
-            cross_lines = ["\nTOP CLIENTI per PRODOTTO (incrociato — risponde a 'chi ha comprato X?'):"]
-            for prod in top_prods:
+            # Tutti i prodotti (non solo top 12) per trovare anche "selection"
+            all_prod_list = df[col_prodotto].dropna().unique().tolist()
+            cross_lines = ["\nTOP E BOTTOM CLIENTI per PRODOTTO"]
+            cross_lines.append("(risponde a 'chi ha comprato di più/meno X?', 'chi ha fatturato più/meno con X?'):")
+            for prod in all_prod_list:
                 df_prod = df[df[col_prodotto] == prod]
                 cli_agg = (df_prod.groupby(col_cliente, observed=True)[val_cols]
                                   .sum(numeric_only=True)
                                   .reset_index()
-                                  .sort_values(val_cols[0], ascending=False)
-                                  .head(5))
-                if cli_agg.empty:
+                                  .sort_values(val_cols[0], ascending=False))
+                if cli_agg.empty or len(cli_agg) < 1:
                     continue
                 cross_lines.append(f"\n  Prodotto: {prod}")
-                for _, row in cli_agg.iterrows():
+                # TOP 5 (di più)
+                cross_lines.append("    TOP (di più):")
+                for _, row in cli_agg.head(5).iterrows():
                     vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
-                    cross_lines.append(f"    → {str(row[col_cliente])[:40]}: {vals}")
-            if len(cross_lines) > 1:
+                    cross_lines.append(f"      ↑ {str(row[col_cliente])[:40]}: {vals}")
+                # BOTTOM 3 (di meno) — solo se ci sono abbastanza clienti
+                if len(cli_agg) > 5:
+                    cross_lines.append("    BOTTOM (di meno):")
+                    for _, row in cli_agg.tail(3).iterrows():
+                        vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
+                        cross_lines.append(f"      ↓ {str(row[col_cliente])[:40]}: {vals}")
+                elif len(cli_agg) > 1:
+                    # Meno di 5 clienti: mostra tutti e indica il minimo
+                    _, last_row = list(cli_agg.tail(1).iterrows())[0]
+                    vals = " | ".join(f"{_fmt_num(last_row[c])}" for c in val_cols if c in last_row.index)
+                    cross_lines.append(f"    MINIMO: {str(last_row[col_cliente])[:40]}: {vals}")
+                if len("\n".join(parts) + "\n".join(cross_lines)) > 6000:
+                    cross_lines.append("  [... altri prodotti omessi per limite token]")
+                    break
+            if len(cross_lines) > 2:
                 parts.append("\n".join(cross_lines))
         except Exception as e:
             parts.append(f"[Cross-agg error: {e}]")
 
-    # --- Cross: TOP PRODOTTI per ogni CLIENTE (top 8 clienti) ---
-    # Risponde a: "Cosa ha comprato di più Esselunga?"
+    # --- Cross: TOP + BOTTOM PRODOTTI per ogni CLIENTE (top 8 clienti) ---
+    # Risponde a: "Cosa ha comprato di più/meno Esselunga?"
     if col_cliente and col_prodotto and val_cols:
         try:
             top_clients = (df.groupby(col_cliente, observed=True)[val_cols[0]]
                             .sum().sort_values(ascending=False).head(8).index.tolist())
-            cross2_lines = ["\nTOP PRODOTTI per CLIENTE (incrociato — risponde a 'cosa ha comprato X?'):"]
+            cross2_lines = ["\nTOP E BOTTOM PRODOTTI per CLIENTE"]
+            cross2_lines.append("(risponde a 'cosa ha comprato di più/meno il cliente X?'):")
             for cli in top_clients:
                 df_cli = df[df[col_cliente] == cli]
                 prod_agg = (df_cli.groupby(col_prodotto, observed=True)[val_cols]
                                   .sum(numeric_only=True)
                                   .reset_index()
-                                  .sort_values(val_cols[0], ascending=False)
-                                  .head(5))
+                                  .sort_values(val_cols[0], ascending=False))
                 if prod_agg.empty:
                     continue
                 cross2_lines.append(f"\n  Cliente: {cli}")
-                for _, row in prod_agg.iterrows():
+                cross2_lines.append("    TOP (di più):")
+                for _, row in prod_agg.head(5).iterrows():
                     vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
-                    cross2_lines.append(f"    → {str(row[col_prodotto])[:40]}: {vals}")
-                if len("\n".join(parts)) > 5000:
-                    break  # limite token assoluto
-            if len(cross2_lines) > 1:
+                    cross2_lines.append(f"      ↑ {str(row[col_prodotto])[:40]}: {vals}")
+                if len(prod_agg) > 5:
+                    cross2_lines.append("    BOTTOM (di meno):")
+                    for _, row in prod_agg.tail(3).iterrows():
+                        vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
+                        cross2_lines.append(f"      ↓ {str(row[col_prodotto])[:40]}: {vals}")
+                if len("\n".join(parts) + "\n".join(cross2_lines)) > 8000:
+                    break
+            if len(cross2_lines) > 2:
                 parts.append("\n".join(cross2_lines))
         except Exception as e:
             parts.append(f"[Cross-agg2 error: {e}]")
@@ -1426,33 +1463,15 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                     f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
                     for m in st.session_state["ai_chat_history"]
                 )
-                # Escape sicuro per inserimento in template JS
-                import json as _json
-                safe_js = _json.dumps(chat_txt)  # produce stringa JS valida con escape
-                import streamlit.components.v1 as _stc
-                _stc.html(
-                    f"""<script>
-                    (function(){{
-                      var txt = {safe_js};
-                      if(navigator.clipboard && navigator.clipboard.writeText){{
-                        navigator.clipboard.writeText(txt).then(function(){{
-                          document.getElementById('cpok').style.display='inline';
-                        }});
-                      }} else {{
-                        var ta=document.createElement('textarea');
-                        ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0';
-                        document.body.appendChild(ta); ta.select();
-                        document.execCommand('copy');
-                        document.body.removeChild(ta);
-                        document.getElementById('cpok').style.display='inline';
-                      }}
-                    }})();
-                    </script>
-                    <span id="cpok" style="color:#43e97b;font-size:0.78rem;display:none">
-                      ✅ Chat copiata negli appunti!
-                    </span>""",
-                    height=28,
-                )
+                # st.code() ha il pulsante copia nativo di Streamlit (📋 in alto a destra).
+                # navigator.clipboard NON funziona negli iframe sandboxed di stc.html().
+                st.session_state["_chat_copy_text"] = chat_txt
+
+            if st.session_state.get("_chat_copy_text"):
+                st.sidebar.caption("📋 Clicca l'icona copia in alto a destra del box:")
+                st.sidebar.code(st.session_state["_chat_copy_text"], language=None)
+                if st.sidebar.button("✖ Chiudi", key="close_copy_box", use_container_width=True):
+                    st.session_state["_chat_copy_text"] = ""
         else:
             st.caption("Fai una domanda sui dati della pagina corrente.")
             st.caption("💡 Es: 'Top 5 clienti per fatturato' · 'Trend mensile' · 'Riepilogo per fornitore'")
