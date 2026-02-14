@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v54.0 - Groq fix definitivo (no network test), fixedrange zoom mobile, fallback Groq→Gemini)
+# 1. CONFIGURAZIONE & STILE (v55.0 - Fix TOML secrets (groq_api_key in sezione annidata), staticPlot scroll mobile)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v54.0",
+    page_title="EITA Analytics Pro v55.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -618,27 +618,61 @@ def _get_ai_client():
     """
     diag = []
 
-    # --- GROQ ---
-    groq_key = st.secrets.get("groq_api_key", "")
-    if groq_key:
+    # ---------------------------------------------------------------
+    # Helper: legge un secret dal top-level O da una sezione annidata.
+    # NECESSARIO perché in TOML le chiavi scritte DOPO [google_cloud]
+    # finiscono annidate in quella sezione, non al top level.
+    # Es: st.secrets["groq_api_key"] → KeyError
+    #     st.secrets["google_cloud"]["groq_api_key"] → OK
+    # ---------------------------------------------------------------
+    def _read_secret(key: str) -> str:
+        """Cerca `key` al top-level e in tutte le sezioni annidate."""
+        # 1. Top level
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+        # 2. Sezioni annidate (google_cloud, ecc.)
+        for section_key in st.secrets:
+            try:
+                section = st.secrets[section_key]
+                if hasattr(section, "get"):
+                    val = section.get(key, "")
+                    if val:
+                        return val
+            except Exception:
+                continue
+        return ""
+
+    # --- GROQ (primario, gratuito) ---
+    groq_key = _read_secret("groq_api_key")
+    groq_key_location = "top-level"
+    if not groq_key:
+        groq_key_location = "non trovato"
+        diag.append("groq_api_key: ❌ non trovato nei Secrets (né top-level né sezioni annidate)")
+        diag.append("  SOLUZIONE: nel file Secrets, metti groq_api_key PRIMA di [google_cloud]")
+    else:
+        # Determina dove è stato trovato
+        if st.secrets.get("groq_api_key", ""):
+            groq_key_location = "top-level ✅"
+        else:
+            groq_key_location = "in sezione annidata ⚠️ (meglio spostarlo prima di [google_cloud])"
+        diag.append(f"groq_api_key: trovato — posizione: {groq_key_location}")
         try:
             from groq import Groq
             client = Groq(api_key=groq_key)
-            diag.append("groq_api_key: trovato ✅  |  pacchetto groq: importato ✅")
-            diag.append(f"Modello primario: {_GROQ_MODELS[0]}")
+            diag.append("Groq SDK: importato e inizializzato ✅")
+            diag.append(f"Modello: {_GROQ_MODELS[0]}")
             return client, "groq", _GROQ_MODELS[0], None, "\n".join(diag)
         except ImportError:
-            diag.append("groq_api_key: trovato ✅  |  pacchetto groq: ❌ NON installato")
-            diag.append("→ Verifica che requirements.txt contenga 'groq' e fai Reboot app")
+            diag.append("❌ Pacchetto 'groq' NON installato nell'ambiente Streamlit")
+            diag.append("  → Verifica requirements.txt → fai Manage App → Reboot app")
         except Exception as e:
-            diag.append(f"groq_api_key: trovato ✅  |  Groq init error: {e}")
-    else:
-        diag.append("groq_api_key: ❌ non trovato nei Secrets")
-        diag.append("→ Aggiungi: groq_api_key = \"gsk_...\" in Streamlit Secrets")
+            diag.append(f"❌ Groq init error: {type(e).__name__}: {e}")
 
     # --- GEMINI (fallback) ---
-    gemini_key = st.secrets.get("gemini_api_key", "")
+    gemini_key = _read_secret("gemini_api_key")
     if gemini_key:
+        diag.append(f"gemini_api_key: trovato — uso come fallback")
         try:
             genai.configure(api_key=gemini_key)
             for mname in ["gemini-2.0-flash-lite", "gemini-2.5-flash"]:
@@ -650,20 +684,20 @@ def _get_ai_client():
                             temperature=0.1, top_p=0.85, max_output_tokens=4096
                         ),
                     )
-                    diag.append(f"Gemini fallback: {mname} ✅")
+                    diag.append(f"Gemini {mname}: OK ✅")
                     return m, "gemini", mname, None, "\n".join(diag)
                 except Exception as em:
-                    diag.append(f"  Gemini {mname}: {em}")
+                    diag.append(f"  Gemini {mname}: {type(em).__name__}: {em}")
                     continue
         except Exception as e:
-            diag.append(f"Gemini config error: {e}")
+            diag.append(f"❌ Gemini config error: {e}")
     else:
         diag.append("gemini_api_key: non trovato")
 
     return None, None, None, (
         "Nessuna API configurata.\n\n"
-        "Aggiungi nei Secrets Streamlit:\n"
-        "groq_api_key = \"gsk_...\"  (gratuito → console.groq.com)"
+        "Aggiungi nei Secrets Streamlit (PRIMA di [google_cloud]):\n"
+        'groq_api_key = "gsk_..."'
     ), "\n".join(diag)
 
 
@@ -684,27 +718,36 @@ _PLOTLY_CONFIG = {
 
 def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
     """
-    Wrapper st.plotly_chart con fix mobile anti-zoom accidentale.
-    allow_zoom=None → legge da session_state (toggle sidebar).
-    allow_zoom=True/False → override esplicito.
+    Wrapper st.plotly_chart con gestione zoom mobile.
+
+    Modalità SCROLL (default, zoom OFF):
+      config staticPlot=True → Plotly non cattura NESSUN evento touch
+      → il browser riceve tutti gli eventi → la pagina scrolla normalmente.
+      Il grafico è visibile ma non interattivo.
+
+    Modalità ZOOM (zoom ON via toggle sidebar):
+      staticPlot=False → interazione normale (zoom, pan, hover).
+      fixedrange rimosso → pinch-to-zoom funziona.
     """
-    # Legge preferenza zoom dal session_state
     if allow_zoom is None:
         allow_zoom = st.session_state.get("chart_zoom_enabled", False)
 
-    if not allow_zoom:
-        # fixedrange=True è l'UNICO metodo affidabile per bloccare
-        # il pinch-zoom su mobile — funziona a livello di renderer Plotly.
-        try:
-            fig.update_xaxes(fixedrange=True)
-            fig.update_yaxes(fixedrange=True)
-        except Exception:
-            pass
+    if allow_zoom:
+        # Zoom ON: interattività completa
+        cfg = dict(_PLOTLY_CONFIG)
+        cfg["staticPlot"] = False
+    else:
+        # Zoom OFF: grafico statico → scroll pagina funziona su mobile
+        cfg = {
+            "staticPlot":  True,   # nessun evento catturato da Plotly
+            "responsive":  True,
+            "displaylogo": False,
+        }
 
     st.plotly_chart(
         fig,
         use_container_width=True,
-        config=_PLOTLY_CONFIG,
+        config=cfg,
         key=key,
     )
 
@@ -994,11 +1037,15 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
             </div>''',
             unsafe_allow_html=True
         )
-        # Mostra diagnostica solo su richiesta
-        with st.sidebar.expander("🔍 Info provider", expanded=False):
+        # Diagnostica espandibile (default chiusa se AI funziona)
+        with st.sidebar.expander("🔍 Info provider / Diagnostica", expanded=False):
             st.code(_diag_chk, language=None)
+            st.caption(
+                "💡 Se vedi Gemini invece di Groq: controlla che groq_api_key "
+                "sia PRIMA di [google_cloud] nel file Secrets."
+            )
     else:
-        st.sidebar.error("⚙️ AI non configurata")
+        st.sidebar.error("⚙️ AI non configurata — leggi la diagnostica:")
         with st.sidebar.expander("🔍 Diagnostica AI", expanded=True):
             st.code(_diag_chk, language=None)
 
@@ -1121,17 +1168,21 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
 st.sidebar.title("🚀 EITA Dashboard")
 st.sidebar.markdown("---")
 
-# Toggle zoom grafici (mobile-friendly)
+# Toggle zoom grafici
 if "chart_zoom_enabled" not in st.session_state:
     st.session_state["chart_zoom_enabled"] = False
 
 _zoom_val = st.sidebar.checkbox(
-    "🔍 Abilita zoom grafici (mobile)",
+    "🔍 Abilita zoom grafici",
     value=st.session_state["chart_zoom_enabled"],
     key="chart_zoom_cb",
-    help="Su mobile: disattivo = scorri pagina | attivo = zooma/sposta grafici"
+    help="📱 Mobile: OFF=scorri pagina | ON=zooma grafici  🖥️ Desktop: nessun effetto"
 )
 st.session_state["chart_zoom_enabled"] = _zoom_val
+if _zoom_val:
+    st.sidebar.caption("🔍 Zoom attivo — tocca i grafici per zoomare")
+else:
+    st.sidebar.caption("📜 Scroll attivo — grafici statici")
 st.sidebar.markdown("---")
 
 # AI Assistant sempre visibile in cima (prima della navigazione pagine)
