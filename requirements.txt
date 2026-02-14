@@ -9,3 +9,4 @@ openpyxl
 xlsxwriter
 google-generativeai
 numpy
+gtts
