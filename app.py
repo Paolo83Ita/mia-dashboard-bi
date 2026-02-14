@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v55.0 - Fix TOML secrets (groq_api_key in sezione annidata), staticPlot scroll mobile)
+# 1. CONFIGURAZIONE & STILE (v56.0 - Context AI con aggregazioni reali (top clienti/prodotti/fornitori, trend mensile))
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v55.0",
+    page_title="EITA Analytics Pro v56.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -586,16 +586,30 @@ _COL_LEGEND = {
 #   Secret Streamlit: gemini_api_key = "AIza..."
 # ==========================================================================
 
-_AI_SYSTEM_PROMPT = """Sei un assistente dati di Business Intelligence preciso e affidabile.
+_AI_SYSTEM_PROMPT = """Sei un assistente esperto di Business Intelligence per un'azienda alimentare italiana (EITA).
 
-REGOLE FONDAMENTALI:
-1. Rispondi SOLO con dati presenti nel contesto fornito. Se mancano, dì esplicitamente "Dato non disponibile nel contesto".
-2. NON inventare, NON stimare valori non presenti. Meglio "non so" che un numero sbagliato.
-3. Cita i valori esatti: es. "Il cliente X ha fatturato € 12.345,67".
-4. Rispondi sempre in italiano, in modo professionale e conciso.
-5. Per le tabelle usa formato Markdown (| col1 | col2 |).
-6. Per i calcoli mostra la formula usata.
-7. Se il campione è parziale (dataset > 300 righe), segnalalo nella risposta.
+Il tuo contesto contiene dati AGGREGATI reali estratti dal database:
+- TOTALI COMPLESSIVI: somme di fatturato, kg, quantità
+- TOP 15 per CLIENTE: fatturato e kg per ogni cliente, ordinati per importo decrescente
+- TOP 15 per PRODOTTO: fatturato e kg per ogni prodotto
+- TOP 15 per FORNITORE: spesa e kg per ogni fornitore (pagina Acquisti)
+- TREND MENSILE: dati aggregati mese per mese (ultimi 24 mesi)
+- Aggregazioni per altri raggruppamenti significativi (entità, gruppo prodotto, ecc.)
+
+Le colonne numeriche usano questi nomi:
+- Vendite: Importo_Netto_TotRiga (€), Peso_Netto_TotRiga (Kg)
+- Acquisti: Invoice amount (€ fatturato fornitore), Kg acquistati
+- Valori abbreviati: K = migliaia, M = milioni
+
+REGOLE:
+1. USA i dati aggregati nel contesto per rispondere DIRETTAMENTE. Non dire "non ho i dati" se ci sono tabelle TOP N nel contesto.
+2. Per "top 5 clienti" → leggi la tabella TOP 15 per CLIENTE e prendi i primi 5.
+3. Per "fornitore più costoso" → leggi TOP 15 per FORNITORE.
+4. Per "trend" o "andamento mensile" → usa la sezione TREND MENSILE.
+5. Cita sempre i valori esatti con unità: € 1.234.567 o 1.234 Kg.
+6. Rispondi in italiano, usa tabelle Markdown per dati strutturati.
+7. Se la risposta richiede dati non presenti nel contesto, dillo chiaramente.
+8. NON inventare valori. Se un numero non è nel contesto, dì "dato non disponibile".
 """
 
 # ---------------------------------------------------------------------------
@@ -752,37 +766,216 @@ def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Mapping colonne per dataset: client → colonne cliente, amount → importo, ecc.
+# Usato da _build_compact_context per creare aggregazioni reali.
+# ---------------------------------------------------------------------------
+_CTX_COL_MAPS = {
+    # Dataset Vendite
+    "vendite": {
+        "cliente":  ["Decr_Cliente_Fat", "Descr_Cliente_Fat", "Descr_Cliente_Dest", "Cliente"],
+        "prodotto": ["Descr_Articolo", "Prodotto", "Articolo"],
+        "importo":  ["Importo_Netto_TotRiga", "Euro", "Fatturato", "Netto"],
+        "kg":       ["Peso_Netto_TotRiga", "Kg", "Peso"],
+        "entita":   ["Entity", "Società", "Division"],
+        "data":     ["Data_Documento", "Data", "Date"],
+    },
+    # Dataset Promozioni
+    "promo": {
+        "prodotto": ["Descr_Articolo", "Prodotto"],
+        "cliente":  ["Decr_Cliente_Fat", "Descr_Cliente_Fat", "Cliente"],
+        "importo":  ["Importo_Netto_TotRiga", "Euro"],
+        "qty":      ["Qta_Cartoni_Ordinato", "Quantità"],
+        "data":     ["Data_Documento", "Data"],
+    },
+    # Dataset Acquisti
+    "acquisti": {
+        "fornitore": ["Supplier name", "Supplier number"],
+        "prodotto":  ["Part description", "Part group description", "Part number"],
+        "importo":   ["Invoice amount", "Line amount", "Row amount"],
+        "kg":        ["Kg acquistati", "Part net weight"],
+        "data":      ["Invoice date", "Delivery date", "Date of receipt"],
+    },
+}
+
+
+def _detect_dataset_type(label: str, cols: list) -> str:
+    """Rileva il tipo di dataset dal label e dalle colonne presenti."""
+    label_lower = label.lower()
+    if any(k in label_lower for k in ["acquist", "purchase", "supplier"]):
+        return "acquisti"
+    if any(k in label_lower for k in ["promo", "iniziativ"]):
+        return "promo"
+    if any(k in label_lower for k in ["vendit", "fattur", "sales"]):
+        return "vendite"
+    # Fallback: deduci dalle colonne
+    cols_lower = [c.lower() for c in cols]
+    if any("supplier" in c or "invoice" in c for c in cols_lower):
+        return "acquisti"
+    if "sconto7" in " ".join(cols_lower) or "promo" in " ".join(cols_lower):
+        return "promo"
+    return "vendite"
+
+
+def _first_col(df: pd.DataFrame, candidates: list):
+    """Ritorna la prima colonna candidata presente nel df, o None."""
+    return next((c for c in candidates if c in df.columns), None)
+
+
+def _fmt_num(val) -> str:
+    """Formatta numero: €1.234.567 o 1.234.567,89 Kg."""
+    try:
+        v = float(val)
+        if abs(v) >= 1_000_000:
+            return f"{v/1_000_000:.2f}M"
+        if abs(v) >= 1_000:
+            return f"{v/1_000:.1f}K"
+        return f"{v:.2f}"
+    except Exception:
+        return str(val)
+
+
+def _agg_table(df: pd.DataFrame, group_col: str, value_cols: list,
+               top_n: int = 15, label: str = "") -> str:
+    """
+    Crea una tabella aggregata (group_col × SUM di value_cols).
+    Ritorna stringa Markdown pronta per il context AI.
+    """
+    present = [c for c in value_cols if c in df.columns]
+    if not present or group_col not in df.columns:
+        return ""
+    try:
+        agg = (df.groupby(group_col, observed=True)[present]
+                 .sum(numeric_only=True)
+                 .reset_index()
+                 .sort_values(present[0], ascending=False)
+                 .head(top_n))
+        if agg.empty:
+            return ""
+        lines = [f"\nTOP {top_n} per {label or group_col}:"]
+        header = f"{'Voce':<35} | " + " | ".join(f"{c:>14}" for c in present)
+        lines.append(header)
+        lines.append("-" * len(header))
+        for _, row in agg.iterrows():
+            voce = str(row[group_col])[:34]
+            vals = " | ".join(f"{_fmt_num(row[c]):>14}" for c in present)
+            lines.append(f"{voce:<35} | {vals}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[Errore aggregazione {group_col}: {e}]"
+
+
+def _monthly_trend(df: pd.DataFrame, date_col: str, value_cols: list) -> str:
+    """Crea trend mensile aggregato (ultimi 24 mesi)."""
+    present = [c for c in value_cols if c in df.columns]
+    if not present or date_col not in df.columns:
+        return ""
+    try:
+        tmp = df.copy()
+        tmp["__mese__"] = pd.to_datetime(tmp[date_col], errors="coerce").dt.to_period("M")
+        tmp = tmp.dropna(subset=["__mese__"])
+        agg = (tmp.groupby("__mese__", observed=True)[present]
+                  .sum(numeric_only=True)
+                  .reset_index()
+                  .sort_values("__mese__")
+                  .tail(24))
+        if agg.empty:
+            return ""
+        lines = ["\nTREND MENSILE (ultimi 24 mesi):"]
+        header = f"{'Mese':<12} | " + " | ".join(f"{c:>14}" for c in present)
+        lines.append(header)
+        lines.append("-" * len(header))
+        for _, row in agg.iterrows():
+            vals = " | ".join(f"{_fmt_num(row[c]):>14}" for c in present)
+            lines.append(f"{str(row['__mese__']):<12} | {vals}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[Errore trend: {e}]"
+
+
 def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
-    """Contesto compatto: ~300-600 token, nessun CSV raw."""
+    """
+    Contesto INTELLIGENTE con aggregazioni reali per rispondere a domande come:
+    - Top 5 clienti per fatturato → gruppo per cliente, somma importo
+    - Fornitore con più spesa → gruppo per fornitore, somma invoice
+    - Trend mensile → raggruppamento per mese
+    - Qual è il prodotto più venduto → gruppo per prodotto, somma kg/qty
+
+    Formato testo compatto (~600-1200 token) con tabelle Markdown leggibili dall'AI.
+    """
     if context_df is None or context_df.empty:
         return ""
-    n_total  = len(context_df)
-    cols     = context_df.columns.tolist()
-    num_cols = context_df.select_dtypes(include="number").columns.tolist()
-    cat_cols = context_df.select_dtypes(exclude="number").columns.tolist()
 
-    num_stats = ""
-    if num_cols:
-        try:
-            num_stats = context_df[num_cols].describe().round(2).to_string()
-        except Exception:
-            num_stats = "N/D"
+    df   = context_df
+    n    = len(df)
+    cols = df.columns.tolist()
+    dset = _detect_dataset_type(context_label, cols)
+    cmap = _CTX_COL_MAPS.get(dset, {})
 
-    cat_lines = []
-    for c in cat_cols[:8]:
-        try:
-            vc = context_df[c].value_counts().head(10)
-            cat_lines.append(f"{c}: {dict(vc)}")
-        except Exception:
-            pass
+    parts = []
+    parts.append(f"\n\n{'='*60}")
+    parts.append(f"DATASET: {context_label} | Righe: {n:,} | Tipo: {dset.upper()}")
+    parts.append(f"Colonne disponibili: {', '.join(cols)}")
+    parts.append("="*60)
 
-    return (
-        f"\n\n=== DATI: {context_label} ({n_total} righe) ===\n"
-        f"Colonne: {', '.join(cols)}\n\n"
-        f"STATISTICHE NUMERICHE:\n{num_stats}\n\n"
-        f"TOP VALORI CATEGORICI:\n" + "\n".join(cat_lines) +
-        "\n=== FINE CONTESTO ===\n"
-    )
+    # --- Colonne chiave ---
+    col_cliente  = _first_col(df, cmap.get("cliente",  []))
+    col_prodotto = _first_col(df, cmap.get("prodotto", []))
+    col_fornitore= _first_col(df, cmap.get("fornitore",[]))
+    col_importo  = _first_col(df, cmap.get("importo",  []))
+    col_kg       = _first_col(df, cmap.get("kg",       []))
+    col_qty      = _first_col(df, cmap.get("qty",      []))
+    col_data     = _first_col(df, cmap.get("data",     []))
+
+    # Colonne numeriche effettive
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    val_cols = [c for c in [col_importo, col_kg, col_qty] if c and c in num_cols]
+    if not val_cols and num_cols:
+        val_cols = num_cols[:3]
+
+    # --- Riepilogo totali ---
+    if val_cols:
+        tot_lines = []
+        for c in val_cols:
+            try:
+                tot = df[c].sum()
+                tot_lines.append(f"  {c}: {_fmt_num(tot)}")
+            except Exception:
+                pass
+        if tot_lines:
+            parts.append("\nTOTALI COMPLESSIVI:\n" + "\n".join(tot_lines))
+
+    # --- Aggregazioni per CLIENTE ---
+    if col_cliente:
+        parts.append(_agg_table(df, col_cliente, val_cols, top_n=15, label="CLIENTE"))
+
+    # --- Aggregazioni per PRODOTTO ---
+    if col_prodotto:
+        parts.append(_agg_table(df, col_prodotto, val_cols, top_n=15, label="PRODOTTO"))
+
+    # --- Aggregazioni per FORNITORE (acquisti) ---
+    if col_fornitore:
+        parts.append(_agg_table(df, col_fornitore, val_cols, top_n=15, label="FORNITORE"))
+
+    # --- Altre colonne categoriche chiave ---
+    cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+    done = {col_cliente, col_prodotto, col_fornitore, col_data}
+    for c in cat_cols:
+        if c in done or c is None:
+            continue
+        n_unique = df[c].nunique()
+        # Solo colonne con cardinalità media (5-200 valori unici) → utili per groupby
+        if 2 <= n_unique <= 200 and val_cols:
+            parts.append(_agg_table(df, c, val_cols[:2], top_n=10, label=c))
+        if len("\n".join(parts)) > 3500:
+            break  # limite token
+
+    # --- Trend mensile ---
+    if col_data and val_cols:
+        parts.append(_monthly_trend(df, col_data, val_cols[:2]))
+
+    parts.append("\n" + "="*60 + " FINE CONTESTO =" + "="*44 + "\n")
+    return "\n".join(p for p in parts if p)
 
 
 def _transcribe_audio_groq(client, audio_bytes: bytes) -> str:
