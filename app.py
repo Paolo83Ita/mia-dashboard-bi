@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v57.0 - Cross-aggregazione prodotto×cliente, fix clipboard copia chat)
+# 1. CONFIGURAZIONE & STILE (v60.0 - Dedup risposta AI, periodo nel contesto, divieto disclaimer anno/ripetizioni)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v57.0",
+    page_title="EITA Analytics Pro v60.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -586,34 +586,55 @@ _COL_LEGEND = {
 #   Secret Streamlit: gemini_api_key = "AIza..."
 # ==========================================================================
 
-_AI_SYSTEM_PROMPT = """Sei un assistente esperto di Business Intelligence per un'azienda alimentare italiana (EITA).
+_AI_SYSTEM_PROMPT = """Sei un assistente esperto di Business Intelligence per EITA, azienda alimentare italiana.
 
-Il tuo contesto contiene dati AGGREGATI reali estratti dal database:
-- TOTALI COMPLESSIVI: somme di fatturato, kg, quantità
-- TOP 15 per CLIENTE: fatturato e kg per ogni cliente, ordinati per importo decrescente
-- TOP 15 per PRODOTTO: fatturato e kg per ogni prodotto
-- TOP 15 per FORNITORE: spesa e kg per ogni fornitore (pagina Acquisti)
-- TREND MENSILE: dati aggregati mese per mese (ultimi 24 mesi)
+════ NATURA DEI DATI ════
+I numeri nel contesto sono VALORI ESATTI calcolati direttamente dal database aziendale.
+NON sono stime, NON sono approssimazioni, NON sono campioni parziali.
+Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni".
+
+════ STRUTTURA DEL CONTESTO ════
+- Il contesto mostra il PERIODO FILTRATO con la data esatta (es. "01/01/2026 – 31/01/2026").
+  Quando l'utente chiede dati "nel 2026" e il periodo filtrato è 2026 → rispondi con CERTEZZA ASSOLUTA.
+  Non dire mai "non so se è 2026" se il periodo è già indicato nel contesto.
+- TOTALI COMPLESSIVI: somme esatte di fatturato/kg/quantità nel periodo selezionato
+- TOP 15 per CLIENTE: fatturato e kg esatti per cliente, ordine decrescente
+- TOP 15 per PRODOTTO: fatturato e kg esatti per prodotto
+- TOP 15 per FORNITORE: spesa e kg esatti per fornitore (pagina Acquisti)
 - TOP CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti che lo hanno comprato di più
 - TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati
-- Aggregazioni per altri raggruppamenti significativi (entità, gruppo prodotto, ecc.)
+- TREND MENSILE: aggregazione mensile esatta (ultimi 24 mesi)
+- Colonne: Importo_Netto_TotRiga=€ vendite, Peso_Netto_TotRiga=Kg venduti,
+           Invoice amount=€ acquisti fornitore, Kg acquistati=Kg ricevuti
 
-Le colonne numeriche usano questi nomi:
-- Vendite: Importo_Netto_TotRiga (€), Peso_Netto_TotRiga (Kg)
-- Acquisti: Invoice amount (€ fatturato fornitore), Kg acquistati
-- Valori abbreviati: K = migliaia, M = milioni
+════ REGOLE DI RISPOSTA ════
+1. RISPONDI SEMPRE in modo diretto e assertivo. I dati nel contesto sono affidabili al 100%.
 
-REGOLE:
-1. USA i dati aggregati nel contesto per rispondere DIRETTAMENTE. Non dire "non ho i dati" se ci sono tabelle TOP N nel contesto.
-2. Per "top 5 clienti" → leggi la tabella TOP 15 per CLIENTE e prendi i primi 5.
-3. Per "chi ha comprato X?" → leggi la sezione TOP CLIENTI per PRODOTTO, trova il prodotto e mostra i clienti.
-4. Per "cosa ha comprato cliente Y?" → leggi TOP PRODOTTI per CLIENTE, trova il cliente.
-5. Per "fornitore più costoso" → leggi TOP 15 per FORNITORE.
-4. Per "trend" o "andamento mensile" → usa la sezione TREND MENSILE.
-5. Cita sempre i valori esatti con unità: € 1.234.567 o 1.234 Kg.
-6. Rispondi in italiano, usa tabelle Markdown per dati strutturati.
-7. Se la risposta richiede dati non presenti nel contesto, dillo chiaramente.
-8. NON inventare valori. Se un numero non è nel contesto, dì "dato non disponibile".
+2. NON scrivere MAI queste frasi (o varianti simili):
+   ✗ "non sono sicuro"
+   ✗ "potrebbe essere"
+   ✗ "non abbiamo informazioni sull'anno"
+   ✗ "non possiamo confermare se questo dato si riferisce al [anno]"
+   ✗ "se i dati fossero disponibili"
+   ✗ "presumibilmente", "stimo", "circa"
+   Se il dato è nel contesto → citalo con certezza assoluta, senza disclaimer.
+
+3. ANNO/PERIODO: Il contesto indica esplicitamente il PERIODO ANALIZZATO (es. "01/01/2026 – 31/01/2026").
+   Se l'utente chiede "nel 2026" e il periodo è il 2026 → rispondi con certezza assoluta sull'anno.
+   NON aggiungere mai "non so se è 2026" quando il periodo è già indicato.
+
+4. NON RIPETERE MAI lo stesso paragrafo o la stessa frase più di una volta nella risposta.
+   Scrivi ogni concetto UNA SOLA VOLTA. Concludi la risposta dopo l'ultima informazione utile.
+
+5. Per "top N clienti/prodotti/fornitori" → leggi la tabella TOP 15 corrispondente.
+6. Per "chi ha comprato X?" → leggi TOP CLIENTI per PRODOTTO.
+7. Per "cosa ha comprato il cliente Y?" → leggi TOP PRODOTTI per CLIENTE.
+8. Per "trend/andamento" → leggi TREND MENSILE.
+9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
+10. Usa tabelle Markdown per confronti multi-riga.
+11. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
+    dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
+12. NON inventare valori, NON calcolare stime non supportate dai dati.
 """
 
 # ---------------------------------------------------------------------------
@@ -827,14 +848,23 @@ def _first_col(df: pd.DataFrame, candidates: list):
 
 
 def _fmt_num(val) -> str:
-    """Formatta numero: €1.234.567 o 1.234.567,89 Kg."""
+    """
+    Formatta numero con separatori italiani COMPLETI.
+    Numeri interi: 1.234.567  (nessuna abbreviazione → AI non dice "non sono sicuro")
+    Numeri decimali: 1.234.567,89
+    NON usare K/M: l'AI le interpreta come approssimazioni e si cautela.
+    """
     try:
         v = float(val)
-        if abs(v) >= 1_000_000:
-            return f"{v/1_000_000:.2f}M"
-        if abs(v) >= 1_000:
-            return f"{v/1_000:.1f}K"
-        return f"{v:.2f}"
+        if v == int(v) and abs(v) >= 1:
+            # Numero intero: formato con punto come separatore migliaia
+            return f"{int(v):,}".replace(",", ".")
+        else:
+            # Decimale: 2 cifre, punto migliaia, virgola decimale
+            formatted = f"{v:,.2f}"
+            # Converti da formato inglese (1,234.56) a italiano (1.234,56)
+            formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+            return formatted
     except Exception:
         return str(val)
 
@@ -919,6 +949,11 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
     parts = []
     parts.append(f"\n\n{'='*60}")
     parts.append(f"DATASET: {context_label} | Righe: {n:,} | Tipo: {dset.upper()}")
+    parts.append("⚡ TUTTI I VALORI SONO ESATTI — calcolati dal database, nessuna stima")
+    # Estrai il periodo dal label se presente (formato "Vendite EITA | Periodo: DD/MM/YYYY – DD/MM/YYYY")
+    if "Periodo:" in context_label:
+        parts.append(f"📅 {context_label.split('Periodo:')[1].strip()}")
+        parts.append("   → I dati sopra si riferiscono SOLO a questo periodo. Rispondi con certezza.")
     parts.append(f"Colonne disponibili: {', '.join(cols)}")
     parts.append("="*60)
 
@@ -1073,10 +1108,10 @@ def _call_groq(client, model_name: str, history: list,
             resp = client.chat.completions.create(
                 model=current_model,
                 messages=messages,
-                temperature=0.1,
-                max_tokens=4096,
+                temperature=0.05,   # quasi-deterministico → risposte precise e assertive
+                max_tokens=8192,    # risposta lunga senza troncamenti
             )
-            answer  = resp.choices[0].message.content
+            answer  = _deduplicate_response(resp.choices[0].message.content)
             in_tok  = getattr(resp.usage, "prompt_tokens",     0) or 0
             out_tok = getattr(resp.usage, "completion_tokens", 0) or 0
             return answer, in_tok, out_tok, None, current_model
@@ -1121,7 +1156,7 @@ def _call_gemini(client, history: list, prompt: str, audio_bytes: bytes = None):
             usage   = getattr(resp, "usage_metadata", None)
             in_tok  = getattr(usage, "prompt_token_count",    0) or 0
             out_tok = getattr(usage, "candidates_token_count",0) or 0
-            return resp.text, in_tok, out_tok, None
+            return _deduplicate_response(resp.text), in_tok, out_tok, None
         except Exception as e:
             err_str = str(e)
             if ("429" in err_str) and attempt < 2:
@@ -1129,6 +1164,63 @@ def _call_gemini(client, history: list, prompt: str, audio_bytes: bytes = None):
                 continue
             return None, 0, 0, err_str
     return None, 0, 0, "Quota Gemini esaurita."
+
+
+def _deduplicate_response(text: str) -> str:
+    """
+    Rimuove paragrafi e frasi identici ripetuti consecutivamente.
+    LLaMA con temperature bassa tende a ripetere l'ultimo blocco 2-3 volte,
+    sia con doppio newline che concatenati senza separatore.
+    """
+    if not text:
+        return text
+
+    # --- PASSATA 1: paragrafi separati da \n\n ---
+    paragraphs = text.split("\n\n")
+    deduped = []
+    prev = None
+    for p in paragraphs:
+        stripped = p.strip()
+        if stripped and stripped != prev:
+            deduped.append(p)
+            prev = stripped
+    text = "\n\n".join(deduped)
+
+    # --- PASSATA 2: blocchi ripetuti concatenati senza separatore ---
+    # Usa regex: trova il pattern (X){2,} dove X è qualunque sequenza >=30 chars
+    import re as _re
+    # Cerca sequenze ripetute 2+ volte (almeno 30 caratteri per sequenza)
+    # Il pattern è greedy-free per trovare la ripetizione più lunga
+    changed = True
+    max_iter = 5
+    while changed and max_iter > 0:
+        changed = False
+        max_iter -= 1
+        # Cerca: una stringa di almeno 30 char seguita dalla stessa stringa identica
+        match = _re.search(
+            r'(.{30,}?)\1+',
+            text,
+            flags=_re.DOTALL
+        )
+        if match:
+            # Sostituisce tutte le ripetizioni con una sola occorrenza
+            repeated = _re.escape(match.group(1))
+            original = match.group(0)
+            text = text.replace(original, match.group(1), 1)
+            changed = True
+
+    # --- PASSATA 3: frasi ripetute consecutive ---
+    parts = [s.strip() for s in text.split(". ") if s.strip()]
+    clean = []
+    prev_s = None
+    for s in parts:
+        if s != prev_s or len(s) < 15:
+            clean.append(s)
+            prev_s = s
+    text = ". ".join(clean)
+    if text and not text.endswith((".", "!", "?")):
+        text += "."
+    return text
 
 
 def _call_ai(client, provider: str, model_name: str,
@@ -1606,9 +1698,13 @@ if page == "📊 Vendite & Fatturazione":
 
         st.title(f"Performance Overview: {sel_ent or 'Global'}")
 
-        # Aggiorna contesto AI con i dati filtrati correnti
+        # Aggiorna contesto AI con i dati filtrati correnti + periodo
+        try:
+            _periodo_sales = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
+        except Exception:
+            _periodo_sales = ""
         st.session_state["ai_context_df"]    = df_global
-        st.session_state["ai_context_label"] = f"Vendite {sel_ent or 'Global'}"
+        st.session_state["ai_context_label"] = f"Vendite {sel_ent or 'Global'}{_periodo_sales}"
 
         if not df_global.empty:
             tot_euro    = df_global[col_euro].sum()
@@ -2044,8 +2140,13 @@ elif page == "🎁 Analisi Customer Promo":
 
         # Aggiorna contesto AI con i dati promo filtrati
         if not df_pglobal.empty:
+            _periodo_promo = ""
+            try:
+                _periodo_promo = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
+            except Exception:
+                pass
             st.session_state["ai_context_df"]    = df_pglobal
-            st.session_state["ai_context_label"] = "Promozioni"
+            st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
 
         if not df_pglobal.empty:
             tot_promo_uniche = (
@@ -2512,8 +2613,13 @@ elif page == "📦 Analisi Acquisti":
 
         # Aggiorna contesto AI
         if not df_pu_global.empty:
+            _periodo_pu = ""
+            try:
+                _periodo_pu = f" | Periodo: {d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}"
+            except Exception:
+                pass
             st.session_state["ai_context_df"]    = df_pu_global
-            st.session_state["ai_context_label"] = "Acquisti"
+            st.session_state["ai_context_label"] = f"Acquisti{_periodo_pu}"
 
         if not df_pu_global.empty:
             # KPI calcolati sul df filtrato (reattivi a tutti i filtri)
