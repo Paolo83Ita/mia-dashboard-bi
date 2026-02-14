@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v49.0 - Grafici 3D pagine 2-3, voce+token counter, KPI fix)
+# 1. CONFIGURAZIONE & STILE (v51.0 - Groq free tier (LLaMA 3.3 + Whisper), fallback Gemini, token counter unificato)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v49.0",
+    page_title="EITA Analytics Pro v51.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -524,52 +524,92 @@ _COL_LEGEND = {
     "Kg acquistati":         "Kg acquistati = Line amount / Purchase price",
 }
 
+# ==========================================================================
+# AI: SISTEMA UNIFICATO GROQ (primario) + GEMINI (fallback opzionale)
+#
+# GROQ — piano gratuito generoso, nessuna carta di credito:
+#   • llama-3.3-70b-versatile: 30 RPM, 1.000 RPD, 6.000 TPM
+#   • llama-3.1-8b-instant:    30 RPM, 14.400 RPD, 20.000 TPM (più veloce)
+#   • Whisper nativo per trascrizione vocale
+#   Registrazione: https://console.groq.com → "Create API Key"
+#   Secret Streamlit: groq_api_key = "gsk_..."
+#
+# GEMINI (fallback) — se hai billing attivo su Google AI Studio:
+#   Secret Streamlit: gemini_api_key = "AIza..."
+# ==========================================================================
+
 _AI_SYSTEM_PROMPT = """Sei un assistente dati di Business Intelligence preciso e affidabile.
 
-REGOLE FONDAMENTALI — rispettale sempre:
-1. RISPONDI SOLO con dati presenti nel contesto fornito. Se un dato non è nel contesto, dì "Non ho questo dato nel contesto attuale".
-2. NON inventare, NON stimare, NON dedurre valori non presenti. Meglio dire "non so" che dare un numero sbagliato.
-3. Cita sempre il valore esatto trovato nel dataset. Es: "Il fornitore X ha un Invoice amount di € 12.345,67 (fonte: riga presente nel campione dati)".
-4. Se l'utente chiede un'analisi impossibile con i dati forniti, spiegalo chiaramente.
-5. Rispondi sempre in italiano, in modo professionale e conciso.
-6. Per le tabelle usa formato Markdown (| col1 | col2 |).
-7. Per i calcoli mostra la formula usata e i valori intermedi.
-8. Se hai dubbi sulla completezza del campione (es. dataset > 300 righe), segnalalo.
+REGOLE FONDAMENTALI:
+1. Rispondi SOLO con dati presenti nel contesto fornito. Se mancano, dì esplicitamente "Dato non disponibile nel contesto".
+2. NON inventare, NON stimare valori non presenti. Meglio "non so" che un numero sbagliato.
+3. Cita i valori esatti: es. "Il cliente X ha fatturato € 12.345,67".
+4. Rispondi sempre in italiano, in modo professionale e conciso.
+5. Per le tabelle usa formato Markdown (| col1 | col2 |).
+6. Per i calcoli mostra la formula usata.
+7. Se il campione è parziale (dataset > 300 righe), segnalalo nella risposta.
 """
+
+# ---------------------------------------------------------------------------
+# Limiti free tier (fonte: documentazione ufficiale Feb 2026)
+# ---------------------------------------------------------------------------
+_GROQ_FREE_RPM = 30
+_GROQ_FREE_TPD = 500_000    # stima conservativa (varia per modello)
+_GROQ_MODELS   = [
+    "llama-3.3-70b-versatile",  # migliore qualità, 1.000 RPD
+    "llama-3.1-8b-instant",     # più veloce, 14.400 RPD (fallback quota)
+]
 
 
 @st.cache_resource
-def _get_gemini_client():
-    """Singleton Gemini client (cache_resource → inizializzato una sola volta)."""
-    try:
-        api_key = st.secrets.get("gemini_api_key", "")
-        if not api_key:
-            return None, "Secret 'gemini_api_key' non trovato"
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction=_AI_SYSTEM_PROMPT,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,      # bassa temperatura → meno creatività, più precisione
-                top_p=0.85,
-                max_output_tokens=4096,
-            ),
-        )
-        return model, None
-    except Exception as e:
-        return None, str(e)
+def _get_ai_client():
+    """
+    Restituisce (client, provider, model_name, error).
+    Priorità: Groq (free) → Gemini (se billing attivo).
+    """
+    # --- GROQ (primario) ---
+    groq_key = st.secrets.get("groq_api_key", "")
+    if groq_key:
+        try:
+            from groq import Groq
+            client = Groq(api_key=groq_key)
+            # Test veloce: prova il modello principale
+            return client, "groq", _GROQ_MODELS[0], None
+        except ImportError:
+            pass  # groq non installato → prova Gemini
+        except Exception as e:
+            pass  # chiave invalida → prova Gemini
 
+    # --- GEMINI (fallback) ---
+    gemini_key = st.secrets.get("gemini_api_key", "")
+    if gemini_key:
+        try:
+            genai.configure(api_key=gemini_key)
+            for mname in ["gemini-2.0-flash-lite", "gemini-2.5-flash"]:
+                try:
+                    m = genai.GenerativeModel(
+                        model_name=mname,
+                        system_instruction=_AI_SYSTEM_PROMPT,
+                        generation_config=genai.GenerationConfig(
+                            temperature=0.1, top_p=0.85, max_output_tokens=4096
+                        ),
+                    )
+                    return m, "gemini", mname, None
+                except Exception:
+                    continue
+        except Exception as e:
+            return None, None, None, f"Gemini error: {e}"
 
-# ---------------------------------------------------------------------------
-# Costanti quota Gemini free tier (fonte: Google AI docs Feb 2026)
-# Usate per stima — non sono dati live dall'API.
-# ---------------------------------------------------------------------------
-_GEMINI_FREE_RPM    = 15          # richieste al minuto
-_GEMINI_FREE_TPD    = 1_000_000   # token al giorno
+    return None, None, None, (
+        "Nessuna API key trovata.\n"
+        "Aggiungi in Streamlit Secrets:\n"
+        "• groq_api_key = \"gsk_...\" (gratuito → console.groq.com)\n"
+        "• oppure gemini_api_key = \"AIza...\" (Google AI Studio)"
+    )
 
 
 def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
-    """Costruisce contesto COMPATTO (~150-800 token) per Gemini."""
+    """Contesto compatto: ~300-600 token, nessun CSV raw."""
     if context_df is None or context_df.empty:
         return ""
     n_total  = len(context_df)
@@ -601,46 +641,101 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
     )
 
 
-def _call_gemini_with_retry(model, history: list, prompt: str,
-                             audio_bytes: bytes = None,
-                             audio_mime: str = "audio/wav",
-                             max_retries: int = 2):
+def _transcribe_audio_groq(client, audio_bytes: bytes) -> str:
+    """Trascrive audio WAV con Whisper via Groq (gratis, veloce)."""
+    try:
+        result = client.audio.transcriptions.create(
+            file=("audio.wav", audio_bytes, "audio/wav"),
+            model="whisper-large-v3-turbo",
+            language="it",
+            response_format="text",
+        )
+        return str(result).strip()
+    except Exception as e:
+        return f"[Errore trascrizione: {e}]"
+
+
+def _call_ai(client, provider: str, model_name: str,
+             history: list, prompt: str,
+             audio_bytes: bytes = None,
+             max_retries: int = 2):
     """
-    Chiama Gemini con retry su 429.
-    Supporta prompt testo e/o audio inline (per input vocale).
-    Restituisce (answer_text, usage_metadata, error_str).
+    Chiama Groq o Gemini con retry automatico su 429.
+    Se audio_bytes fornito (Groq): trascrive prima con Whisper, poi chiede.
+    Restituisce (answer, input_tokens, output_tokens, error).
     """
-    # Costruisce il contenuto del messaggio
-    if audio_bytes:
+    # Gestione voce: Groq trascrive con Whisper separato
+    final_prompt = prompt
+    if audio_bytes and provider == "groq":
+        transcript = _transcribe_audio_groq(client, audio_bytes)
+        final_prompt = f"[Domanda vocale trascritta]: {transcript}\n\n{prompt}"
+    elif audio_bytes and provider == "gemini":
+        # Gemini: audio inline
         audio_b64 = base64.b64encode(audio_bytes).decode()
-        content = [
-            {"inline_data": {"mime_type": audio_mime, "data": audio_b64}},
-            {"text": prompt or "Analizza l'audio e rispondi in italiano."},
-        ]
-    else:
-        content = prompt
+        # per Gemini gestiamo sotto
 
     for attempt in range(max_retries + 1):
         try:
-            chat     = model.start_chat(history=history)
-            response = chat.send_message(content)
-            usage    = getattr(response, "usage_metadata", None)
-            return response.text, usage, None
+            if provider == "groq":
+                messages = [{"role": "system", "content": _AI_SYSTEM_PROMPT}]
+                for m in history:
+                    messages.append({
+                        "role":    "assistant" if m["role"] == "model" else m["role"],
+                        "content": m["text"],
+                    })
+                messages.append({"role": "user", "content": final_prompt})
+
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=4096,
+                )
+                answer = resp.choices[0].message.content
+                in_tok = getattr(resp.usage, "prompt_tokens",     0) or 0
+                out_tok= getattr(resp.usage, "completion_tokens", 0) or 0
+                return answer, in_tok, out_tok, None
+
+            else:  # gemini
+                gem_history = [
+                    {"role": m["role"], "parts": [m["text"]]}
+                    for m in history
+                ]
+                if audio_bytes:
+                    audio_b64 = base64.b64encode(audio_bytes).decode()
+                    content = [
+                        {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
+                        {"text": final_prompt or "Analizza l'audio e rispondi."},
+                    ]
+                else:
+                    content = final_prompt
+                chat = client.start_chat(history=gem_history)
+                resp = chat.send_message(content)
+                usage = getattr(resp, "usage_metadata", None)
+                in_tok  = getattr(usage, "prompt_token_count",     0) or 0
+                out_tok = getattr(usage, "candidates_token_count", 0) or 0
+                return resp.text, in_tok, out_tok, None
+
         except Exception as e:
             err_str = str(e)
-            if "429" in err_str and attempt < max_retries:
-                wait_s = 15
+            # Rate limit → attendi e riprova
+            if ("429" in err_str or "rate_limit" in err_str.lower()) and attempt < max_retries:
+                wait_s = 20
                 m_wait = re.search(r"retry in (\d+)", err_str)
                 if m_wait:
                     wait_s = min(int(m_wait.group(1)), 60)
                 time.sleep(wait_s)
+                # Se Groq ha esaurito il modello 70B, prova 8B
+                if provider == "groq" and model_name == _GROQ_MODELS[0] and len(_GROQ_MODELS) > 1:
+                    model_name = _GROQ_MODELS[1]
                 continue
-            return None, None, err_str
-    return None, None, "Quota esaurita dopo i retry."
+            return None, 0, 0, err_str
+
+    return None, 0, 0, "Quota esaurita dopo i retry."
 
 
 def _tts_audio(text: str) -> bytes | None:
-    """Genera audio MP3 da testo in italiano via gTTS. Ritorna bytes o None."""
+    """Genera audio MP3 da testo in italiano via gTTS (gratis, nessuna API key)."""
     try:
         from gtts import gTTS
         buf = io.BytesIO()
@@ -653,83 +748,77 @@ def _tts_audio(text: str) -> bytes | None:
         return None
 
 
-def _update_token_stats(usage) -> None:
-    """Aggiorna il contatore token in session_state dai metadata Gemini."""
+def _update_token_stats(in_tok: int, out_tok: int, provider: str, model: str) -> None:
+    """Aggiorna contatore token in session_state."""
     if "ai_token_stats" not in st.session_state:
         st.session_state["ai_token_stats"] = {
-            "session_input":  0,
-            "session_output": 0,
-            "session_calls":  0,
-            "last_call_ts":   None,
-            "day_start_ts":   time.time(),
+            "session_input": 0, "session_output": 0,
+            "session_calls": 0, "last_call_ts": None,
+            "day_start_ts": time.time(), "provider": provider, "model": model,
         }
-    stats = st.session_state["ai_token_stats"]
-    # Reset giornaliero se passate 24h dall'inizio sessione
-    if time.time() - stats["day_start_ts"] > 86400:
-        stats["session_input"]  = 0
-        stats["session_output"] = 0
-        stats["session_calls"]  = 0
-        stats["day_start_ts"]   = time.time()
-
-    if usage:
-        stats["session_input"]  += getattr(usage, "prompt_token_count",      0) or 0
-        stats["session_output"] += getattr(usage, "candidates_token_count",  0) or 0
-    stats["session_calls"] += 1
-    stats["last_call_ts"]   = time.time()
+    s = st.session_state["ai_token_stats"]
+    if time.time() - s["day_start_ts"] > 86400:
+        s["session_input"] = s["session_output"] = s["session_calls"] = 0
+        s["day_start_ts"]  = time.time()
+    s["session_input"]  += in_tok
+    s["session_output"] += out_tok
+    s["session_calls"]  += 1
+    s["last_call_ts"]    = time.time()
+    s["provider"]        = provider
+    s["model"]           = model
 
 
 def _render_token_counter() -> None:
-    """Mostra contatore token compatto nella sidebar."""
+    """Widget token counter compatto nella sidebar."""
     if "ai_token_stats" not in st.session_state:
         return
-    stats        = st.session_state["ai_token_stats"]
-    tot_session  = stats["session_input"] + stats["session_output"]
-    est_remain   = max(0, _GEMINI_FREE_TPD - tot_session)
-    pct_used     = min(100, int(tot_session / _GEMINI_FREE_TPD * 100))
+    s         = st.session_state["ai_token_stats"]
+    tot       = s["session_input"] + s["session_output"]
+    provider  = s.get("provider", "groq")
+    model_lbl = s.get("model", "")
+    # Limiti per provider
+    tpd_limit = _GROQ_FREE_TPD if provider == "groq" else 1_000_000
+    rpm_limit = _GROQ_FREE_RPM if provider == "groq" else 15
+    est_rem   = max(0, tpd_limit - tot)
+    pct       = min(100, int(tot / tpd_limit * 100))
 
-    # Countdown reset minuto (rate limit)
-    last_ts      = stats.get("last_call_ts")
-    if last_ts:
-        elapsed  = time.time() - last_ts
-        rpm_wait = max(0, int(60 - elapsed))
-    else:
-        rpm_wait = 0
-
-    color = "#43e97b" if pct_used < 60 else "#f7971e" if pct_used < 85 else "#e74c3c"
-    reset_txt = f"⏱️ Reset min: {rpm_wait}s" if rpm_wait > 0 else "✅ Rate limit ok"
+    last_ts   = s.get("last_call_ts")
+    rpm_wait  = max(0, int(60 - (time.time() - last_ts))) if last_ts else 0
+    color     = "#43e97b" if pct < 60 else "#f7971e" if pct < 85 else "#e74c3c"
+    rate_txt  = f"⏱️ {rpm_wait}s" if rpm_wait > 0 else "✅ ok"
+    prov_icon = "🟡 Groq" if provider == "groq" else "🔵 Gemini"
+    reset_hour= "09:00" if provider == "groq" else "09:00"  # entrambi mezzanotte PT
 
     st.sidebar.markdown(
-        f"""<div style="font-size:0.72rem; padding:6px 10px; margin:4px 0;
-            background:rgba(0,0,0,0.18); border-radius:8px;
+        f"""<div style="font-size:0.71rem; padding:6px 10px; margin:4px 0;
+            background:rgba(0,0,0,0.2); border-radius:8px;
             border-left:3px solid {color};">
-        <b>📊 Token sessione</b> — <span style="color:{color}">{pct_used}%</span> usato<br>
-        ✉️ Usati: <b>{tot_session:,}</b> · Stima rimanenti: <b>{est_remain:,}</b><br>
-        📞 Chiamate: {stats['session_calls']} · {reset_txt}<br>
-        <span style="opacity:0.6;font-size:0.65rem;">
-        ⚠️ Stima basata su sessione corrente (limite free: 1M tok/giorno)
+        <b>📊 Token</b> — <span style="color:{color}"><b>{pct}%</b></span> usato<br>
+        ✉️ {tot:,} usati · ~{est_rem:,} rimanenti<br>
+        🤖 {prov_icon} · {model_lbl.split("-")[0] if model_lbl else "—"}<br>
+        📞 {s["session_calls"]} chiamate · Rate: {rate_txt}<br>
+        <span style="opacity:0.55;font-size:0.63rem;">
+        Stima sessione · Reset: {reset_hour} IT · Limite: {rpm_limit} req/min
         </span></div>""",
         unsafe_allow_html=True,
     )
 
 
 def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""):
-    """AI Data Assistant con token counter, input testo e input vocale."""
+    """AI Data Assistant: Groq (free) + voce Whisper + output TTS."""
     st.sidebar.markdown("### 💬 AI Data Assistant")
 
-    # Inizializza stato
     if "ai_chat_history" not in st.session_state:
         st.session_state["ai_chat_history"] = []
 
-    has_history = len(st.session_state["ai_chat_history"]) > 0
-
-    # ── Token counter (sopra la chat) ──────────────────────────────
+    has_history = bool(st.session_state["ai_chat_history"])
     _render_token_counter()
 
-    # ── Storico chat ───────────────────────────────────────────────
+    # ── Storico chat ────────────────────────────────────────────────
     with st.sidebar.expander("💬 Chat", expanded=has_history):
         if has_history:
             st.markdown('<div class="ai-chat-container">', unsafe_allow_html=True)
-            for i, msg in enumerate(st.session_state["ai_chat_history"]):
+            for msg in st.session_state["ai_chat_history"]:
                 if msg["role"] == "user":
                     icon = "🎤" if msg.get("voice") else "🧑"
                     st.markdown(
@@ -739,113 +828,93 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                 else:
                     st.markdown("🤖 **Risposta:**")
                     st.markdown(msg["text"])
-                    # Riproduci audio se disponibile
                     if msg.get("audio_bytes"):
                         st.audio(msg["audio_bytes"], format="audio/mp3", autoplay=False)
             st.markdown('</div>', unsafe_allow_html=True)
-
-            col_c, col_cp = st.columns([1, 1])
-            with col_c:
+            col_a, col_b = st.columns(2)
+            with col_a:
                 if st.button("🗑️ Pulisci", key="clear_ai_chat", use_container_width=True):
                     st.session_state["ai_chat_history"] = []
                     st.rerun()
-            with col_cp:
-                if st.button("📋 Copia tutto", key="copy_ai_chat", use_container_width=True):
-                    all_text = "\n\n".join(
+            with col_b:
+                if st.button("📋 Copia", key="copy_ai_chat", use_container_width=True):
+                    st.code("\n\n".join(
                         f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
                         for m in st.session_state["ai_chat_history"]
-                    )
-                    st.code(all_text, language=None)
+                    ), language=None)
         else:
             st.caption("Fai una domanda sui dati della pagina corrente.")
-            st.caption(
-                "💡 Es: 'Top fornitori per spesa' · 'Trend mensile' · 'Tabella riepilogo'"
-            )
+            st.caption("💡 Es: 'Top 5 clienti per fatturato' · 'Trend mensile' · 'Riepilogo per fornitore'")
 
-    # ── Opzioni risposta ───────────────────────────────────────────
+    # ── Opzioni ─────────────────────────────────────────────────────
     with st.sidebar.expander("⚙️ Opzioni risposta", expanded=False):
-        speak_answer = st.checkbox(
-            "🔊 Leggi risposta ad alta voce",
-            value=st.session_state.get("ai_speak", False),
-            key="ai_speak_cb"
-        )
+        speak_answer = st.checkbox("🔊 Leggi risposta ad alta voce",
+                                   value=st.session_state.get("ai_speak", False),
+                                   key="ai_speak_cb")
         st.session_state["ai_speak"] = speak_answer
-        if speak_answer:
-            try:
-                from gtts import gTTS  # noqa: F401
-                st.caption("✅ gTTS disponibile — risposta in italiano")
-            except ImportError:
-                st.caption("⚠️ gTTS non installato — aggiungi `gtts` a requirements.txt")
 
-    # ── Input testo ────────────────────────────────────────────────
+    # ── Input testo ─────────────────────────────────────────────────
     user_text = st.sidebar.chat_input("Scrivi domanda...", key="ai_chat_input")
 
-    # ── Input vocale ───────────────────────────────────────────────
-    with st.sidebar.expander("🎤 Domanda vocale", expanded=False):
-        st.caption("Registra la tua domanda — Gemini trascrive e risponde.")
+    # ── Input vocale ────────────────────────────────────────────────
+    audio_rec = None
+    with st.sidebar.expander("🎤 Domanda vocale (Whisper)", expanded=False):
+        st.caption("Registra → Groq Whisper trascrive → AI risponde.")
         try:
-            audio_rec = st.audio_input("🎙️ Premi per registrare", key="ai_voice_input")
+            audio_rec = st.audio_input("🎙️ Tieni premuto per parlare", key="ai_voice_input")
         except AttributeError:
-            audio_rec = None
-            st.caption("⚠️ st.audio_input richiede Streamlit ≥ 1.36")
+            st.caption("⚠️ Richiede Streamlit ≥ 1.36")
 
-    # ── Processa input (testo o voce) ──────────────────────────────
+    # ── Processa ────────────────────────────────────────────────────
     audio_bytes = None
     voice_mode  = False
     if audio_rec is not None:
         audio_bytes = audio_rec.read()
         voice_mode  = True
-        user_text   = "[Input vocale]"  # placeholder per la history
+        user_text   = user_text or ""
 
-    if user_text or audio_bytes:
-        model, err = _get_gemini_client()
-        if model is None:
-            st.sidebar.error(f"Gemini non disponibile: {err}")
-            return
+    if not (user_text or audio_bytes):
+        return
 
-        context_text = _build_compact_context(context_df, context_label)
-        history = [
-            {"role": m["role"], "parts": [m["text"]]}
-            for m in st.session_state["ai_chat_history"]
-        ]
-        prompt_txt = (user_text or "") + context_text
+    client, provider, model_name, err = _get_ai_client()
+    if client is None:
+        st.sidebar.warning(f"⚠️ AI non configurata\n\n{err}")
+        return
 
-        with st.sidebar:
-            with st.spinner("🤖 Elaborazione..."):
-                answer, usage, err_msg = _call_gemini_with_retry(
-                    model, history, prompt_txt,
-                    audio_bytes=audio_bytes,
-                    audio_mime="audio/wav"
-                )
+    context_text = _build_compact_context(context_df, context_label)
+    history = [{"role": m["role"], "text": m["text"]}
+               for m in st.session_state["ai_chat_history"]]
+    prompt_txt = (user_text or "") + context_text
 
-        if answer:
-            _update_token_stats(usage)
+    with st.sidebar, st.spinner(f"🤖 {provider.capitalize()} sta elaborando..."):
+        answer, in_tok, out_tok, err_msg = _call_ai(
+            client, provider, model_name,
+            history, prompt_txt, audio_bytes=audio_bytes
+        )
 
-            # TTS se richiesto
-            audio_out = None
-            if st.session_state.get("ai_speak"):
-                audio_out = _tts_audio(answer)
-
-            display_q = "[🎤 Domanda vocale]" if voice_mode else user_text
-            st.session_state["ai_chat_history"].append(
-                {"role": "user",  "text": display_q, "voice": voice_mode}
+    if answer:
+        _update_token_stats(in_tok, out_tok, provider, model_name)
+        audio_out = _tts_audio(answer) if st.session_state.get("ai_speak") else None
+        display_q = f"[🎤 {voice_mode and 'Vocale' or ''}] {user_text or '(audio)'}" if voice_mode else user_text
+        st.session_state["ai_chat_history"].append(
+            {"role": "user",  "text": display_q, "voice": voice_mode}
+        )
+        st.session_state["ai_chat_history"].append(
+            {"role": "model", "text": answer, "audio_bytes": audio_out}
+        )
+        st.rerun()
+    else:
+        is_quota = any(x in (err_msg or "") for x in ["429", "rate_limit", "quota"])
+        if is_quota:
+            st.sidebar.warning(
+                f"⚠️ **Quota esaurita ({provider}).**\n\n"
+                "**Soluzioni:**\n"
+                "1. Attendi 1 min e riprova (rolling window)\n"
+                "2. La domanda seguente userà automaticamente il modello più leggero\n"
+                "3. Groq reset: ore 09:00 IT · console.groq.com → Usage"
             )
-            st.session_state["ai_chat_history"].append(
-                {"role": "model", "text": answer, "audio_bytes": audio_out}
-            )
-            st.rerun()
         else:
-            if "429" in (err_msg or ""):
-                st.sidebar.warning(
-                    "⚠️ **Quota API Gemini esaurita.**\n\n"
-                    "Sei sul piano gratuito (limite: 15 req/min, 1M tok/giorno).\n\n"
-                    "**Soluzioni:**\n"
-                    "1. Attendi 1 minuto e riprova\n"
-                    "2. Abilita piano a pagamento su [Google AI Studio](https://aistudio.google.com)\n"
-                    "3. Scrivi una domanda più breve"
-                )
-            else:
-                st.sidebar.error(f"Errore: {err_msg}")
+            st.sidebar.error(f"Errore: {err_msg}")
 
 
 
