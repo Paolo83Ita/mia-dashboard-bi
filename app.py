@@ -9,13 +9,16 @@ import io
 import datetime
 import numpy as np
 import json
+import base64
+import re
+import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v47.0 - KPI fix, Pie senza overlap, AI retry+quota, token ridotti)
+# 1. CONFIGURAZIONE & STILE (v49.0 - Grafici 3D pagine 2-3, voce+token counter, KPI fix)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v47.0",
+    page_title="EITA Analytics Pro v49.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -557,46 +560,196 @@ def _get_gemini_client():
         return None, str(e)
 
 
+# ---------------------------------------------------------------------------
+# Costanti quota Gemini free tier (fonte: Google AI docs Feb 2026)
+# Usate per stima — non sono dati live dall'API.
+# ---------------------------------------------------------------------------
+_GEMINI_FREE_RPM    = 15          # richieste al minuto
+_GEMINI_FREE_TPD    = 1_000_000   # token al giorno
+
+
+def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
+    """Costruisce contesto COMPATTO (~150-800 token) per Gemini."""
+    if context_df is None or context_df.empty:
+        return ""
+    n_total  = len(context_df)
+    cols     = context_df.columns.tolist()
+    num_cols = context_df.select_dtypes(include="number").columns.tolist()
+    cat_cols = context_df.select_dtypes(exclude="number").columns.tolist()
+
+    num_stats = ""
+    if num_cols:
+        try:
+            num_stats = context_df[num_cols].describe().round(2).to_string()
+        except Exception:
+            num_stats = "N/D"
+
+    cat_lines = []
+    for c in cat_cols[:8]:
+        try:
+            vc = context_df[c].value_counts().head(10)
+            cat_lines.append(f"{c}: {dict(vc)}")
+        except Exception:
+            pass
+
+    return (
+        f"\n\n=== DATI: {context_label} ({n_total} righe) ===\n"
+        f"Colonne: {', '.join(cols)}\n\n"
+        f"STATISTICHE NUMERICHE:\n{num_stats}\n\n"
+        f"TOP VALORI CATEGORICI:\n" + "\n".join(cat_lines) +
+        "\n=== FINE CONTESTO ===\n"
+    )
+
+
+def _call_gemini_with_retry(model, history: list, prompt: str,
+                             audio_bytes: bytes = None,
+                             audio_mime: str = "audio/wav",
+                             max_retries: int = 2):
+    """
+    Chiama Gemini con retry su 429.
+    Supporta prompt testo e/o audio inline (per input vocale).
+    Restituisce (answer_text, usage_metadata, error_str).
+    """
+    # Costruisce il contenuto del messaggio
+    if audio_bytes:
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        content = [
+            {"inline_data": {"mime_type": audio_mime, "data": audio_b64}},
+            {"text": prompt or "Analizza l'audio e rispondi in italiano."},
+        ]
+    else:
+        content = prompt
+
+    for attempt in range(max_retries + 1):
+        try:
+            chat     = model.start_chat(history=history)
+            response = chat.send_message(content)
+            usage    = getattr(response, "usage_metadata", None)
+            return response.text, usage, None
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str and attempt < max_retries:
+                wait_s = 15
+                m_wait = re.search(r"retry in (\d+)", err_str)
+                if m_wait:
+                    wait_s = min(int(m_wait.group(1)), 60)
+                time.sleep(wait_s)
+                continue
+            return None, None, err_str
+    return None, None, "Quota esaurita dopo i retry."
+
+
+def _tts_audio(text: str) -> bytes | None:
+    """Genera audio MP3 da testo in italiano via gTTS. Ritorna bytes o None."""
+    try:
+        from gtts import gTTS
+        buf = io.BytesIO()
+        gTTS(text=text, lang="it", slow=False).write_to_fp(buf)
+        buf.seek(0)
+        return buf.read()
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _update_token_stats(usage) -> None:
+    """Aggiorna il contatore token in session_state dai metadata Gemini."""
+    if "ai_token_stats" not in st.session_state:
+        st.session_state["ai_token_stats"] = {
+            "session_input":  0,
+            "session_output": 0,
+            "session_calls":  0,
+            "last_call_ts":   None,
+            "day_start_ts":   time.time(),
+        }
+    stats = st.session_state["ai_token_stats"]
+    # Reset giornaliero se passate 24h dall'inizio sessione
+    if time.time() - stats["day_start_ts"] > 86400:
+        stats["session_input"]  = 0
+        stats["session_output"] = 0
+        stats["session_calls"]  = 0
+        stats["day_start_ts"]   = time.time()
+
+    if usage:
+        stats["session_input"]  += getattr(usage, "prompt_token_count",      0) or 0
+        stats["session_output"] += getattr(usage, "candidates_token_count",  0) or 0
+    stats["session_calls"] += 1
+    stats["last_call_ts"]   = time.time()
+
+
+def _render_token_counter() -> None:
+    """Mostra contatore token compatto nella sidebar."""
+    if "ai_token_stats" not in st.session_state:
+        return
+    stats        = st.session_state["ai_token_stats"]
+    tot_session  = stats["session_input"] + stats["session_output"]
+    est_remain   = max(0, _GEMINI_FREE_TPD - tot_session)
+    pct_used     = min(100, int(tot_session / _GEMINI_FREE_TPD * 100))
+
+    # Countdown reset minuto (rate limit)
+    last_ts      = stats.get("last_call_ts")
+    if last_ts:
+        elapsed  = time.time() - last_ts
+        rpm_wait = max(0, int(60 - elapsed))
+    else:
+        rpm_wait = 0
+
+    color = "#43e97b" if pct_used < 60 else "#f7971e" if pct_used < 85 else "#e74c3c"
+    reset_txt = f"⏱️ Reset min: {rpm_wait}s" if rpm_wait > 0 else "✅ Rate limit ok"
+
+    st.sidebar.markdown(
+        f"""<div style="font-size:0.72rem; padding:6px 10px; margin:4px 0;
+            background:rgba(0,0,0,0.18); border-radius:8px;
+            border-left:3px solid {color};">
+        <b>📊 Token sessione</b> — <span style="color:{color}">{pct_used}%</span> usato<br>
+        ✉️ Usati: <b>{tot_session:,}</b> · Stima rimanenti: <b>{est_remain:,}</b><br>
+        📞 Chiamate: {stats['session_calls']} · {reset_txt}<br>
+        <span style="opacity:0.6;font-size:0.65rem;">
+        ⚠️ Stima basata su sessione corrente (limite free: 1M tok/giorno)
+        </span></div>""",
+        unsafe_allow_html=True,
+    )
+
+
 def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""):
-    """
-    AI Data Assistant nella sidebar con:
-    - System prompt anti-allucinazioni
-    - Chat history con rendering Markdown (tabelle, codice)
-    - Area risposta espandibile al click, collassabile
-    - Input sempre visibile
-    """
+    """AI Data Assistant con token counter, input testo e input vocale."""
     st.sidebar.markdown("### 💬 AI Data Assistant")
 
     # Inizializza stato
-    if "ai_chat_history"  not in st.session_state:
-        st.session_state["ai_chat_history"]  = []
-    if "ai_chat_expanded" not in st.session_state:
-        st.session_state["ai_chat_expanded"] = False
+    if "ai_chat_history" not in st.session_state:
+        st.session_state["ai_chat_history"] = []
 
     has_history = len(st.session_state["ai_chat_history"]) > 0
 
-    # Expander Chat: auto-aperto se c'è storico
+    # ── Token counter (sopra la chat) ──────────────────────────────
+    _render_token_counter()
+
+    # ── Storico chat ───────────────────────────────────────────────
     with st.sidebar.expander("💬 Chat", expanded=has_history):
         if has_history:
             st.markdown('<div class="ai-chat-container">', unsafe_allow_html=True)
-            for msg in st.session_state["ai_chat_history"]:
+            for i, msg in enumerate(st.session_state["ai_chat_history"]):
                 if msg["role"] == "user":
+                    icon = "🎤" if msg.get("voice") else "🧑"
                     st.markdown(
-                        f'<div class="ai-chat-msg-user">🧑 {msg["text"]}</div>',
+                        f'<div class="ai-chat-msg-user">{icon} {msg["text"]}</div>',
                         unsafe_allow_html=True
                     )
                 else:
-                    # Rendering Markdown completo (supporta tabelle, codice, grassetto)
                     st.markdown("🤖 **Risposta:**")
                     st.markdown(msg["text"])
+                    # Riproduci audio se disponibile
+                    if msg.get("audio_bytes"):
+                        st.audio(msg["audio_bytes"], format="audio/mp3", autoplay=False)
             st.markdown('</div>', unsafe_allow_html=True)
 
-            col_c, col_x = st.columns([1, 1])
+            col_c, col_cp = st.columns([1, 1])
             with col_c:
                 if st.button("🗑️ Pulisci", key="clear_ai_chat", use_container_width=True):
                     st.session_state["ai_chat_history"] = []
                     st.rerun()
-            with col_x:
+            with col_cp:
                 if st.button("📋 Copia tutto", key="copy_ai_chat", use_container_width=True):
                     all_text = "\n\n".join(
                         f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
@@ -605,109 +758,96 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                     st.code(all_text, language=None)
         else:
             st.caption("Fai una domanda sui dati della pagina corrente.")
-            st.caption("💡 Esempi: 'Qual è il fornitore con più spesa?' · 'Mostra top 5 prodotti per kg' · 'Crea una tabella riepilogo per divisione'")
+            st.caption(
+                "💡 Es: 'Top fornitori per spesa' · 'Trend mensile' · 'Tabella riepilogo'"
+            )
 
-    # Input chat sempre visibile
-    user_input = st.sidebar.chat_input("Chiedi ai dati...", key="ai_chat_input")
+    # ── Opzioni risposta ───────────────────────────────────────────
+    with st.sidebar.expander("⚙️ Opzioni risposta", expanded=False):
+        speak_answer = st.checkbox(
+            "🔊 Leggi risposta ad alta voce",
+            value=st.session_state.get("ai_speak", False),
+            key="ai_speak_cb"
+        )
+        st.session_state["ai_speak"] = speak_answer
+        if speak_answer:
+            try:
+                from gtts import gTTS  # noqa: F401
+                st.caption("✅ gTTS disponibile — risposta in italiano")
+            except ImportError:
+                st.caption("⚠️ gTTS non installato — aggiungi `gtts` a requirements.txt")
 
-    if user_input:
+    # ── Input testo ────────────────────────────────────────────────
+    user_text = st.sidebar.chat_input("Scrivi domanda...", key="ai_chat_input")
+
+    # ── Input vocale ───────────────────────────────────────────────
+    with st.sidebar.expander("🎤 Domanda vocale", expanded=False):
+        st.caption("Registra la tua domanda — Gemini trascrive e risponde.")
+        try:
+            audio_rec = st.audio_input("🎙️ Premi per registrare", key="ai_voice_input")
+        except AttributeError:
+            audio_rec = None
+            st.caption("⚠️ st.audio_input richiede Streamlit ≥ 1.36")
+
+    # ── Processa input (testo o voce) ──────────────────────────────
+    audio_bytes = None
+    voice_mode  = False
+    if audio_rec is not None:
+        audio_bytes = audio_rec.read()
+        voice_mode  = True
+        user_text   = "[Input vocale]"  # placeholder per la history
+
+    if user_text or audio_bytes:
         model, err = _get_gemini_client()
         if model is None:
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
 
-        # -------------------------------------------------------
-        # Costruisce contesto COMPATTO per minimizzare i token:
-        # - NO CSV raw → solo statistiche aggregate
-        # - Max 30 righe di esempio per colonne categoriche
-        # - Aggregazioni chiave precalcolate
-        # -------------------------------------------------------
-        context_text = ""
-        if context_df is not None and not context_df.empty:
-            n_total = len(context_df)
-            cols    = context_df.columns.tolist()
-
-            # Statistiche numeriche (describe compatto)
-            num_cols = context_df.select_dtypes(include='number').columns.tolist()
-            cat_cols = context_df.select_dtypes(exclude='number').columns.tolist()
-
-            num_stats = ""
-            if num_cols:
-                try:
-                    ds = context_df[num_cols].describe().round(2)
-                    num_stats = ds.to_string()
-                except Exception:
-                    num_stats = "N/D"
-
-            # Per colonne categoriche: top 10 valori + conteggio
-            cat_summary_lines = []
-            for c in cat_cols[:8]:   # max 8 colonne cat
-                try:
-                    vc = context_df[c].value_counts().head(10)
-                    cat_summary_lines.append(f"{c}: {dict(vc)}")
-                except Exception:
-                    pass
-            cat_summary = "\n".join(cat_summary_lines)
-
-            context_text = (
-                f"\n\n=== DATI: {context_label} ({n_total} righe) ===\n"
-                f"Colonne: {', '.join(cols)}\n\n"
-                f"STATISTICHE NUMERICHE:\n{num_stats}\n\n"
-                f"TOP VALORI CATEGORICI:\n{cat_summary}\n"
-                f"=== FINE CONTESTO ===\n"
-            )
-
+        context_text = _build_compact_context(context_df, context_label)
         history = [
             {"role": m["role"], "parts": [m["text"]]}
             for m in st.session_state["ai_chat_history"]
         ]
-
-        import time
-
-        def _call_gemini_with_retry(model, history, prompt, max_retries=2):
-            """Chiama Gemini con retry automatico su 429. Se esaurisce i retry
-            suggerisce all'utente di aspettare o di ridurre i dati."""
-            for attempt in range(max_retries + 1):
-                try:
-                    chat     = model.start_chat(history=history)
-                    response = chat.send_message(prompt)
-                    return response.text, None
-                except Exception as e:
-                    err_str = str(e)
-                    if "429" in err_str and attempt < max_retries:
-                        # Estrai i secondi di attesa dall'errore se presenti
-                        wait_s = 15
-                        import re
-                        m_wait = re.search(r'retry in (\d+)', err_str)
-                        if m_wait:
-                            wait_s = min(int(m_wait.group(1)), 30)
-                        time.sleep(wait_s)
-                        continue
-                    return None, err_str
-            return None, "Quota esaurita dopo i retry."
+        prompt_txt = (user_text or "") + context_text
 
         with st.sidebar:
             with st.spinner("🤖 Elaborazione..."):
-                answer, err_msg = _call_gemini_with_retry(
-                    model, history, user_input + context_text
+                answer, usage, err_msg = _call_gemini_with_retry(
+                    model, history, prompt_txt,
+                    audio_bytes=audio_bytes,
+                    audio_mime="audio/wav"
                 )
-                if answer:
-                    st.session_state["ai_chat_history"].append({"role": "user",  "text": user_input})
-                    st.session_state["ai_chat_history"].append({"role": "model", "text": answer})
-                    st.rerun()
-                else:
-                    if "429" in (err_msg or ""):
-                        st.sidebar.warning(
-                            "⚠️ **Quota API Gemini esaurita.**\n\n"
-                            "Sei sul piano gratuito (limite: 15 req/min, 1M token/giorno).\n\n"
-                            "**Soluzioni:**\n"
-                            "1. Attendi 1 minuto e riprova\n"
-                            "2. Vai su [Google AI Studio](https://aistudio.google.com) → Billing → abilita piano a pagamento (0,10$/1M token)\n"
-                            "3. Filtra i dati a meno righe prima di chiedere\n"
-                            "4. Scrivi una domanda più breve"
-                        )
-                    else:
-                        st.sidebar.error(f"Errore Gemini: {err_msg}")
+
+        if answer:
+            _update_token_stats(usage)
+
+            # TTS se richiesto
+            audio_out = None
+            if st.session_state.get("ai_speak"):
+                audio_out = _tts_audio(answer)
+
+            display_q = "[🎤 Domanda vocale]" if voice_mode else user_text
+            st.session_state["ai_chat_history"].append(
+                {"role": "user",  "text": display_q, "voice": voice_mode}
+            )
+            st.session_state["ai_chat_history"].append(
+                {"role": "model", "text": answer, "audio_bytes": audio_out}
+            )
+            st.rerun()
+        else:
+            if "429" in (err_msg or ""):
+                st.sidebar.warning(
+                    "⚠️ **Quota API Gemini esaurita.**\n\n"
+                    "Sei sul piano gratuito (limite: 15 req/min, 1M tok/giorno).\n\n"
+                    "**Soluzioni:**\n"
+                    "1. Attendi 1 minuto e riprova\n"
+                    "2. Abilita piano a pagamento su [Google AI Studio](https://aistudio.google.com)\n"
+                    "3. Scrivi una domanda più breve"
+                )
+            else:
+                st.sidebar.error(f"Errore: {err_msg}")
+
+
 
 
 # ==========================================================================
@@ -1373,15 +1513,56 @@ elif page == "🎁 Analisi Customer Promo":
                         total_kg = promo_stats[col_kg_s].sum()
 
                         if not promo_stats.empty:
-                            fig_p = px.pie(
-                                promo_stats, values=col_kg_s, names='Tipo Vendita', hole=0.4,
-                                color='Tipo Vendita',
-                                color_discrete_map={
-                                    'In Promozione': '#FF6B6B',
-                                    'Vendita Normale': '#4ECDC4'}
+                            # Donut 3D-style: strati multipli per profondità
+                            pcolors = {'In Promozione': '#ff6b9d', 'Vendita Normale': '#43e97b'}
+                            pcolors_dark = {'In Promozione': '#c2185b', 'Vendita Normale': '#1b5e20'}
+                            labels = promo_stats['Tipo Vendita'].tolist()
+                            values = promo_stats[col_kg_s].tolist()
+                            colors      = [pcolors.get(l, '#888') for l in labels]
+                            colors_dark = [pcolors_dark.get(l, '#444') for l in labels]
+                            pull = [0.08 if l == 'In Promozione' else 0 for l in labels]
+
+                            fig_p = go.Figure()
+                            # Layer ombra (offset leggermente per effetto 3D)
+                            fig_p.add_trace(go.Pie(
+                                labels=labels, values=values,
+                                hole=0.41, pull=pull,
+                                marker=dict(colors=colors_dark,
+                                            line=dict(color='rgba(0,0,0,0)', width=0)),
+                                textinfo='none', showlegend=False, hoverinfo='skip',
+                                direction='clockwise', sort=False,
+                            ))
+                            # Layer principale
+                            fig_p.add_trace(go.Pie(
+                                labels=labels, values=values,
+                                hole=0.38, pull=pull,
+                                marker=dict(colors=colors,
+                                            line=dict(color='rgba(255,255,255,0.8)', width=3)),
+                                textinfo='percent',
+                                textposition='inside',
+                                textfont=dict(size=15, color='white', family='Arial Black'),
+                                insidetextorientation='horizontal',
+                                direction='clockwise', sort=False,
+                                hovertemplate="<b>%{label}</b><br>📦 %{value:,.0f} Kg<br>%{percent}<extra></extra>",
+                                showlegend=True,
+                            ))
+                            # Annotazione centro
+                            fig_p.add_annotation(
+                                text=f"<b>{total_kg/1e3:.0f}K Kg</b>",
+                                x=0.5, y=0.5, xref='paper', yref='paper',
+                                showarrow=False,
+                                font=dict(size=14, color='white', family='Arial Black'),
                             )
-                            fig_p.update_traces(textposition='inside', textinfo='percent+label')
-                            fig_p.update_layout(showlegend=True, margin=dict(l=20, r=20, t=20, b=20))
+                            fig_p.update_layout(
+                                height=340,
+                                margin=dict(l=10, r=140, t=10, b=10),
+                                showlegend=True,
+                                legend=dict(
+                                    orientation='v', x=1.02, y=0.5, xanchor='left',
+                                    font=dict(size=11),
+                                ),
+                                paper_bgcolor='rgba(0,0,0,0)',
+                            )
                             st.plotly_chart(fig_p, use_container_width=True)
 
                             st.markdown("#### 📉 Dettaglio Metriche")
@@ -1414,27 +1595,60 @@ elif page == "🎁 Analisi Customer Promo":
                                   .sort_values(p_qty_a, ascending=False)
                                   .head(8)
                     )
+                    n_bars_pr = len(top_promos)
+                    # Barre con effetto 3D (shadow + main)
                     fig = go.Figure()
+                    # Shadow trace
                     fig.add_trace(go.Bar(
-                        y=top_promos[promo_desc_col], x=top_promos[p_qty_a],
+                        y=top_promos[promo_desc_col],
+                        x=top_promos[p_qty_a] * 1.006,
+                        orientation='h', showlegend=False,
+                        marker=dict(color='rgba(0,0,0,0.15)', line=dict(width=0)),
+                        hoverinfo='skip',
+                    ))
+                    # Main bars con gradiente rosa-viola premium
+                    norm_vals = top_promos[p_qty_a] / (top_promos[p_qty_a].max() + 1e-9)
+                    bar_colors = [
+                        f"rgba({int(168+87*v)},{int(107-60*v)},{int(157+98*v)},0.92)"
+                        for v in norm_vals
+                    ]
+                    fig.add_trace(go.Bar(
+                        y=top_promos[promo_desc_col],
+                        x=top_promos[p_qty_a],
                         orientation='h',
                         marker=dict(
-                            color=top_promos[p_qty_a],
-                            colorscale=[[0,"#fecfef"],[0.5,"#ff6b9d"],[1,"#a855f7"]],
-                            line=dict(color='rgba(255,255,255,0.3)', width=1),
-                            opacity=0.9,
+                            color=bar_colors,
+                            line=dict(color='rgba(255,255,255,0.4)', width=1.5),
                         ),
                         text=top_promos[p_qty_a].apply(lambda v: f"{v:,.0f}"),
                         textposition='inside', insidetextanchor='middle',
-                        textfont=dict(size=11, color='white', family='Arial Black'),
-                        hovertemplate="<b>%{y}</b><br>📦 Qty: %{x:,.0f}<extra></extra>",
+                        textfont=dict(size=12, color='white', family='Arial Black'),
+                        hovertemplate=(
+                            "<b>%{y}</b><br>"
+                            "📦 Qty Actual: %{x:,.0f}<extra></extra>"
+                        ),
                     ))
                     fig.update_layout(
-                        height=460,
-                        yaxis=dict(autorange="reversed", showgrid=False, tickfont=dict(size=10)),
-                        xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.15)'),
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=0, r=10, t=10, b=10),
+                        height=460, barmode='overlay',
+                        yaxis=dict(
+                            autorange="reversed", showgrid=False,
+                            tickfont=dict(size=10),
+                            tickmode='array',
+                            tickvals=list(range(n_bars_pr)),
+                        ),
+                        xaxis=dict(
+                            showgrid=True, gridcolor='rgba(200,150,255,0.15)',
+                            zeroline=False,
+                        ),
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(l=10, r=10, t=15, b=10),
+                        showlegend=False,
+                        title=dict(
+                            text="Top Promozioni per Volume",
+                            font=dict(size=13, color='rgba(255,255,255,0.7)'),
+                            x=0.5,
+                        ),
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
@@ -1734,24 +1948,77 @@ elif page == "📦 Analisi Acquisti":
                                     .groupby(pd.Grouper(key=pu_date, freq='ME'))[pu_amount]
                                     .sum().reset_index())
                         fig_trend = go.Figure()
-                        # Area riempita sotto la curva
+
+                        # Layer 1 — riempimento profondo (effetto ombra area)
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             fill='tozeroy',
-                            fillcolor='rgba(67,233,123,0.12)',
-                            line=dict(color='#43e97b', width=3, shape='spline', smoothing=1.2),
-                            mode='lines+markers',
-                            marker=dict(size=7, color='#38f9d7',
-                                        line=dict(color='white', width=1.5)),
-                            hovertemplate="📅 %{x|%b %Y}<br>💸 € %{y:,.2f}<extra></extra>",
+                            fillcolor='rgba(56,249,215,0.05)',
+                            line=dict(color='rgba(0,0,0,0)', width=0),
+                            mode='lines', showlegend=False, hoverinfo='skip',
                         ))
+                        # Layer 2 — area principale con fill luminoso
+                        fig_trend.add_trace(go.Scatter(
+                            x=trend_pu[pu_date], y=trend_pu[pu_amount],
+                            fill='tozeroy',
+                            fillcolor='rgba(67,233,123,0.22)',
+                            line=dict(color='#43e97b', width=3.5, shape='spline', smoothing=1.1),
+                            mode='lines', showlegend=False, hoverinfo='skip',
+                        ))
+                        # Layer 3 — linea + marker con glow effect
+                        fig_trend.add_trace(go.Scatter(
+                            x=trend_pu[pu_date], y=trend_pu[pu_amount],
+                            mode='lines+markers+text',
+                            line=dict(color='#38f9d7', width=2, shape='spline', smoothing=1.1),
+                            marker=dict(
+                                size=10, color='#43e97b',
+                                line=dict(color='white', width=2.5),
+                                symbol='circle',
+                            ),
+                            text=trend_pu[pu_amount].apply(
+                                lambda v: f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}"
+                            ),
+                            textposition='top center',
+                            textfont=dict(size=9, color='rgba(255,255,255,0.75)'),
+                            hovertemplate=(
+                                "📅 <b>%{x|%B %Y}</b><br>"
+                                "💸 € %{y:,.2f}<extra></extra>"
+                            ),
+                        ))
+
+                        # Aggiungi linea media mobile (rolling 3 mesi) se abbastanza dati
+                        if len(trend_pu) >= 3:
+                            roll_avg = trend_pu[pu_amount].rolling(3, center=True, min_periods=1).mean()
+                            fig_trend.add_trace(go.Scatter(
+                                x=trend_pu[pu_date], y=roll_avg,
+                                mode='lines', name='Media 3M',
+                                line=dict(color='rgba(247,151,30,0.7)', width=2,
+                                          dash='dot', shape='spline'),
+                                hovertemplate="📈 Media 3M: € %{y:,.2f}<extra></extra>",
+                            ))
+
                         fig_trend.update_layout(
-                            height=400,
-                            xaxis=dict(title="", showgrid=False, tickformat="%b %Y"),
-                            yaxis=dict(title="€ Fatturato", gridcolor='rgba(128,128,128,0.15)',
-                                       tickprefix="€ "),
-                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                            height=420,
+                            xaxis=dict(
+                                title="", showgrid=False,
+                                tickformat="%b %Y", tickangle=-30,
+                                tickfont=dict(size=10),
+                            ),
+                            yaxis=dict(
+                                title="€ Fatturato", showgrid=True,
+                                gridcolor='rgba(67,233,123,0.1)',
+                                tickprefix="€ ", tickfont=dict(size=10),
+                                zeroline=False,
+                            ),
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            plot_bgcolor='rgba(0,0,0,0)',
                             margin=dict(l=0, r=0, t=10, b=10),
+                            showlegend=True,
+                            legend=dict(
+                                x=0.01, y=0.99, font=dict(size=9),
+                                bgcolor='rgba(0,0,0,0.2)', bordercolor='rgba(255,255,255,0.1)',
+                                borderwidth=1,
+                            ),
                         )
                         st.plotly_chart(fig_trend, use_container_width=True)
                     except Exception as e:
@@ -1766,29 +2033,95 @@ elif page == "📦 Analisi Acquisti":
                                 .groupby(pu_supp)[pu_amount]
                                 .sum().sort_values(ascending=False)
                                 .head(10).reset_index())
+                    # Calcola anche Kg per i top fornitori (asse secondario)
+                    top_supp_full = (
+                        df_pu_global.groupby(pu_supp)
+                        .agg(
+                            **{pu_amount: (pu_amount, 'sum'),
+                               pu_kg:    (pu_kg,    'sum')}
+                        )
+                        .reset_index()
+                        .sort_values(pu_amount, ascending=False)
+                        .head(10)
+                    ) if pu_kg in df_pu_global.columns else top_supp.copy()
+
+                    n_sup = len(top_supp_full)
+                    norm_s = top_supp_full[pu_amount] / (top_supp_full[pu_amount].max() + 1e-9)
+                    bar_cols_s = [
+                        f"rgba({int(0+43*v)},{int(198+35*v)},{int(255-87*v)},0.90)"
+                        for v in norm_s
+                    ]
+
                     fig_supp = go.Figure()
+                    # Shadow layer
                     fig_supp.add_trace(go.Bar(
-                        y=top_supp[pu_supp], x=top_supp[pu_amount],
-                        orientation='h',
-                        marker=dict(
-                            color=top_supp[pu_amount],
-                            colorscale=[[0,"#38f9d7"],[0.5,"#43e97b"],[1,"#0072ff"]],
-                            line=dict(color='rgba(255,255,255,0.3)', width=1),
-                            opacity=0.9,
-                        ),
-                        text=top_supp[pu_amount].apply(lambda v: f"€ {v:,.0f}"),
-                        textposition='inside', insidetextanchor='middle',
-                        textfont=dict(size=10, color='white'),
-                        hovertemplate="<b>%{y}</b><br>💸 € %{x:,.2f}<extra></extra>",
+                        y=top_supp_full[pu_supp],
+                        x=top_supp_full[pu_amount] * 1.007,
+                        orientation='h', showlegend=False,
+                        marker=dict(color='rgba(0,0,0,0.18)', line=dict(width=0)),
+                        hoverinfo='skip',
                     ))
+                    # Main bars — importo
+                    fig_supp.add_trace(go.Bar(
+                        y=top_supp_full[pu_supp],
+                        x=top_supp_full[pu_amount],
+                        orientation='h',
+                        name='Importo €',
+                        marker=dict(color=bar_cols_s,
+                                    line=dict(color='rgba(255,255,255,0.4)', width=1.5)),
+                        text=top_supp_full[pu_amount].apply(
+                            lambda v: f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}"
+                        ),
+                        textposition='inside', insidetextanchor='middle',
+                        textfont=dict(size=11, color='white', family='Arial Black'),
+                        hovertemplate=(
+                            "<b>%{y}</b><br>"
+                            "💸 € %{x:,.2f}<extra></extra>"
+                        ),
+                    ))
+                    # Markers Kg sovrapposti (scatter sull'asse X per riferimento visivo)
+                    if pu_kg in top_supp_full.columns:
+                        # Normalizza Kg alla stessa scala importo per visualizzazione
+                        kg_max   = top_supp_full[pu_kg].max()
+                        amt_max  = top_supp_full[pu_amount].max()
+                        kg_scaled = top_supp_full[pu_kg] * (amt_max / (kg_max + 1e-9)) * 0.85
+                        fig_supp.add_trace(go.Scatter(
+                            y=top_supp_full[pu_supp],
+                            x=kg_scaled,
+                            mode='markers',
+                            name='Kg (scala relativa)',
+                            marker=dict(
+                                symbol='diamond', size=10,
+                                color='#f7971e',
+                                line=dict(color='white', width=1.5),
+                            ),
+                            hovertemplate=(
+                                "<b>%{y}</b><br>"
+                                "⚖️ Kg: %{customdata:,.0f}<extra></extra>"
+                            ),
+                            customdata=top_supp_full[pu_kg],
+                        ))
+
                     fig_supp.update_layout(
-                        height=420,
-                        yaxis=dict(autorange="reversed", showgrid=False, tickfont=dict(size=10)),
-                        xaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.15)',
-                                   tickprefix="€ "),
-                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=0, r=10, t=10, b=10),
-                        coloraxis_showscale=False,
+                        height=440, barmode='overlay',
+                        yaxis=dict(
+                            autorange="reversed", showgrid=False,
+                            tickfont=dict(size=10),
+                        ),
+                        xaxis=dict(
+                            showgrid=True,
+                            gridcolor='rgba(0,198,255,0.12)',
+                            tickprefix="€ ",
+                            zeroline=False,
+                        ),
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(l=0, r=10, t=20, b=10),
+                        showlegend=True,
+                        legend=dict(
+                            orientation='h', x=0.0, y=1.0,
+                            font=dict(size=9), bgcolor='rgba(0,0,0,0.15)',
+                        ),
                     )
                     st.plotly_chart(fig_supp, use_container_width=True)
 
