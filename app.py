@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v52.0 - Fix Groq init (no cache), diagnostica AI, mobile scroll/zoom fix, responsive CSS)
+# 1. CONFIGURAZIONE & STILE (v53.0 - Groq test connessione reale, diagnostica sempre visibile, Plotly mobile config)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v52.0",
+    page_title="EITA Analytics Pro v53.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -182,39 +182,7 @@ st.markdown("""
     h2 { font-size:1.25rem !important; }
   }
 </style>
-<script>
-// Blocca zoom Plotly su touch mobile — attivabile con pulsante 🔍
-(function() {
-  function patchPlotlyCharts() {
-    var plots = document.querySelectorAll('.js-plotly-plot:not(.touch-patched)');
-    plots.forEach(function(plot) {
-      plot.classList.add('touch-patched');
-
-      // Crea pulsante zoom toggle
-      var wrapper = plot.closest('[data-testid="stPlotlyChart"]') || plot.parentElement;
-      if (wrapper && !wrapper.querySelector('.chart-zoom-btn')) {
-        wrapper.style.position = 'relative';
-        var btn = document.createElement('button');
-        btn.className = 'chart-zoom-btn';
-        btn.innerHTML = '🔍 Zoom';
-        btn.title = 'Attiva/disattiva zoom con le dita';
-        btn.addEventListener('click', function(e) {
-          e.stopPropagation();
-          var active = plot.classList.toggle('zoom-enabled');
-          btn.innerHTML = active ? '🔒 Scorri' : '🔍 Zoom';
-          btn.style.background = active
-            ? 'rgba(255,107,157,0.3)'
-            : 'rgba(0,114,255,0.18)';
-        });
-        wrapper.appendChild(btn);
-      }
-    });
-  }
-  // Richiama ogni 2s per catturare grafici aggiunti dinamicamente
-  setInterval(patchPlotlyCharts, 2000);
-  document.addEventListener('DOMContentLoaded', patchPlotlyCharts);
-})();
-</script>
+<!-- zoom gestito via Plotly config -->
 """, unsafe_allow_html=True)
 
 
@@ -656,14 +624,26 @@ def _get_ai_client():
     else:
         diag_lines.append("groq_api_key: trovato ✅")
         try:
-            from groq import Groq  # pacchetto groq in requirements.txt
+            from groq import Groq
             client = Groq(api_key=groq_key)
-            diag_lines.append(f"Groq client OK, modello: {_GROQ_MODELS[0]}")
-            return client, "groq", _GROQ_MODELS[0], None, "\n".join(diag_lines)
+            # Test REALE: chiamata leggera per verificare auth + rete
+            # models.list() è gratuita, non consuma token
+            models = client.models.list()
+            available = [m.id for m in models.data]
+            diag_lines.append(f"Groq connessione OK — {len(available)} modelli disponibili")
+            # Scegli il primo modello disponibile tra quelli preferiti
+            chosen = next((m for m in _GROQ_MODELS if m in available), None)
+            if not chosen and available:
+                chosen = available[0]
+            if chosen:
+                diag_lines.append(f"Modello selezionato: {chosen}")
+                return client, "groq", chosen, None, "\n".join(diag_lines)
+            else:
+                diag_lines.append("❌ Nessun modello chat disponibile su Groq")
         except ImportError:
-            diag_lines.append("❌ pacchetto 'groq' non installato — aggiungi a requirements.txt e fai redeploy")
+            diag_lines.append("❌ Pacchetto 'groq' non installato — verifica requirements.txt e riavvia l'app")
         except Exception as e:
-            diag_lines.append(f"❌ Groq init error: {e}")
+            diag_lines.append(f"❌ Groq errore connessione: {e}")
 
     # --- GEMINI (fallback) ---
     gemini_key = st.secrets.get("gemini_api_key", "")
@@ -701,6 +681,33 @@ def _get_ai_client():
         "**Diagnostica:**\n" + "\n".join(diag_lines)
     )
     return None, None, None, err_msg, "\n".join(diag_lines)
+
+
+# ---------------------------------------------------------------------------
+# Config Plotly mobile-safe: disabilita pinch-zoom accidentale.
+# scrollZoom=False blocca sia scroll wheel che pinch su mobile.
+# L'utente può comunque usare i pulsanti della toolbar (+/-) per zoomare.
+# ---------------------------------------------------------------------------
+_PLOTLY_MOBILE_CONFIG = {
+    "scrollZoom":               False,   # no pinch-to-zoom su mobile
+    "doubleClick":              "reset", # doppio tap → reset vista
+    "displayModeBar":           "hover", # toolbar solo su hover/tap
+    "modeBarButtonsToRemove":   [        # rimuove zoom accidentale
+        "zoom2d", "pan2d", "select2d", "lasso2d",
+    ],
+    "responsive":               True,
+    "displaylogo":              False,
+}
+
+
+def _plot(fig, key: str = None) -> None:
+    """Wrapper per st.plotly_chart con config mobile ottimizzata."""
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config=_PLOTLY_MOBILE_CONFIG,
+        key=key,
+    )
 
 
 def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
@@ -907,6 +914,26 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
         st.session_state["ai_chat_history"] = []
 
     has_history = bool(st.session_state["ai_chat_history"])
+
+    # ── Stato provider (sempre visibile) ──────────────────────────
+    # Mostriamo subito quale AI è attiva prima ancora del token counter
+    _client_chk, _prov_chk, _mod_chk, _err_chk, _diag_chk = _get_ai_client()
+    if _client_chk is not None:
+        prov_color = "#43e97b" if _prov_chk == "groq" else "#f7971e"
+        prov_label = "🟡 Groq (free)" if _prov_chk == "groq" else "🔵 Gemini"
+        st.sidebar.markdown(
+            f'''<div style="font-size:0.72rem; padding:5px 10px; margin:2px 0 6px 0;
+                background:rgba(0,0,0,0.2); border-radius:7px;
+                border-left:3px solid {prov_color}; color:rgba(255,255,255,0.85);">
+            ✅ AI attiva: <b>{prov_label}</b> · {_mod_chk}
+            </div>''',
+            unsafe_allow_html=True
+        )
+    else:
+        st.sidebar.warning("⚙️ AI non configurata — espandi Diagnostica")
+        with st.sidebar.expander("🔍 Diagnostica AI", expanded=True):
+            st.code(_diag_chk, language=None)
+
     _render_token_counter()
 
     # ── Storico chat ────────────────────────────────────────────────
@@ -1318,7 +1345,7 @@ if page == "📊 Vendite & Fatturazione":
                             ),
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
-                    st.plotly_chart(fig, use_container_width=True)
+                    _plot(fig)
 
             with col_r:
                 if "TUTTI" in sel_target:
@@ -1729,7 +1756,7 @@ elif page == "🎁 Analisi Customer Promo":
                                 ),
                                 paper_bgcolor='rgba(0,0,0,0)',
                             )
-                            st.plotly_chart(fig_p, use_container_width=True)
+                            _plot(fig_p)
 
                             st.markdown("#### 📉 Dettaglio Metriche")
                             p_row = promo_stats[promo_stats['Tipo Vendita'] == 'In Promozione']
@@ -1816,7 +1843,7 @@ elif page == "🎁 Analisi Customer Promo":
                             x=0.5,
                         ),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    _plot(fig)
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
 
@@ -2186,7 +2213,7 @@ elif page == "📦 Analisi Acquisti":
                                 borderwidth=1,
                             ),
                         )
-                        st.plotly_chart(fig_trend, use_container_width=True)
+                        _plot(fig_trend)
                     except Exception as e:
                         st.warning(f"Impossibile generare grafico temporale: {e}")
                 else:
@@ -2289,7 +2316,7 @@ elif page == "📦 Analisi Acquisti":
                             font=dict(size=9), bgcolor='rgba(0,0,0,0.15)',
                         ),
                     )
-                    st.plotly_chart(fig_supp, use_container_width=True)
+                    _plot(fig_supp)
 
             # --- DETTAGLIO RIGHE ACQUISTO ---
             st.subheader("📋 Dettaglio Righe Acquisto")
