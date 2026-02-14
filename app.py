@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v50.0 - Fix modello free tier, fallback automatico, ora reset in counter)
+# 1. CONFIGURAZIONE & STILE (v49.0 - Grafici 3D pagine 2-3, voce+token counter, KPI fix)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v50.0",
+    page_title="EITA Analytics Pro v49.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -538,46 +538,26 @@ REGOLE FONDAMENTALI — rispettale sempre:
 """
 
 
-# Modelli in ordine di preferenza (dal migliore al più leggero).
-# gemini-2.0-flash ha limit:0 sul free tier → messo dopo i free confirmed.
-# gemini-1.5-flash è CONFERMATO free (15 RPM, 1M token/day, 1500 req/day).
-_GEMINI_MODEL_PRIORITY = [
-    "gemini-1.5-flash",        # ✅ Free tier confermato — PRIMARIO
-    "gemini-2.0-flash-lite",   # ✅ Free tier disponibile — SECONDARIO
-    "gemini-2.5-flash",        # 💳 Piano a pagamento — TERZIARIO
-    "gemini-2.0-flash",        # 💳 Piano a pagamento — QUATERNARIO
-]
-
 @st.cache_resource
 def _get_gemini_client():
-    """
-    Singleton Gemini client con fallback automatico tra modelli.
-    Prova i modelli in ordine di priorità: prima i free tier,
-    poi i modelli a pagamento se billing è abilitato.
-    """
-    api_key = st.secrets.get("gemini_api_key", "")
-    if not api_key:
-        return None, "Secret 'gemini_api_key' non trovato", ""
-    genai.configure(api_key=api_key)
-
-    last_err = ""
-    for model_name in _GEMINI_MODEL_PRIORITY:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=_AI_SYSTEM_PROMPT,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,    # precisione > creatività
-                    top_p=0.85,
-                    max_output_tokens=4096,
-                ),
-            )
-            return model, None, model_name
-        except Exception as e:
-            last_err = str(e)
-            continue
-
-    return None, f"Nessun modello disponibile. Ultimo errore: {last_err}", ""
+    """Singleton Gemini client (cache_resource → inizializzato una sola volta)."""
+    try:
+        api_key = st.secrets.get("gemini_api_key", "")
+        if not api_key:
+            return None, "Secret 'gemini_api_key' non trovato"
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            system_instruction=_AI_SYSTEM_PROMPT,
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,      # bassa temperatura → meno creatività, più precisione
+                top_p=0.85,
+                max_output_tokens=4096,
+            ),
+        )
+        return model, None
+    except Exception as e:
+        return None, str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -718,13 +698,6 @@ def _render_token_counter() -> None:
     color = "#43e97b" if pct_used < 60 else "#f7971e" if pct_used < 85 else "#e74c3c"
     reset_txt = f"⏱️ Reset min: {rpm_wait}s" if rpm_wait > 0 else "✅ Rate limit ok"
 
-    # Ricava il modello in uso dal client (non causa re-init grazie a cache_resource)
-    _, _, _model_in_use = _get_gemini_client()
-    model_badge = (
-        "🟢 free" if "1.5" in _model_in_use or "lite" in _model_in_use
-        else "🔵 paid" if _model_in_use else "❓"
-    )
-
     st.sidebar.markdown(
         f"""<div style="font-size:0.72rem; padding:6px 10px; margin:4px 0;
             background:rgba(0,0,0,0.18); border-radius:8px;
@@ -732,9 +705,8 @@ def _render_token_counter() -> None:
         <b>📊 Token sessione</b> — <span style="color:{color}">{pct_used}%</span> usato<br>
         ✉️ Usati: <b>{tot_session:,}</b> · Stima rimanenti: <b>{est_remain:,}</b><br>
         📞 Chiamate: {stats['session_calls']} · {reset_txt}<br>
-        🤖 Modello: <b>{_model_in_use or 'N/D'}</b> {model_badge}<br>
         <span style="opacity:0.6;font-size:0.65rem;">
-        ⚠️ Stima sessione · Reset quota: 09:00 IT (inverno) / 10:00 IT (estate)
+        ⚠️ Stima basata su sessione corrente (limite free: 1M tok/giorno)
         </span></div>""",
         unsafe_allow_html=True,
     )
@@ -826,7 +798,7 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
         user_text   = "[Input vocale]"  # placeholder per la history
 
     if user_text or audio_bytes:
-        model, err, model_used = _get_gemini_client()
+        model, err = _get_gemini_client()
         if model is None:
             st.sidebar.error(f"Gemini non disponibile: {err}")
             return
