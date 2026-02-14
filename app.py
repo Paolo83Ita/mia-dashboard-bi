@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v51.0 - Groq free tier (LLaMA 3.3 + Whisper), fallback Gemini, token counter unificato)
+# 1. CONFIGURAZIONE & STILE (v52.0 - Fix Groq init (no cache), diagnostica AI, mobile scroll/zoom fix, responsive CSS)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v51.0",
+    page_title="EITA Analytics Pro v52.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -117,24 +117,104 @@ st.markdown("""
     background:rgba(130,150,200,0.3); border-radius:2px;
   }
 
-  /* ---- RESPONSIVE ---- */
-  @media (max-width:900px) {
+  /* ---- GRAFICI: blocca zoom accidentale su mobile ---- */
+  /* di default i grafici non zoomano al touch — si attiva via pulsante JS */
+  .js-plotly-plot .plotly {
+    touch-action: pan-y !important;
+  }
+  .js-plotly-plot.zoom-enabled .plotly {
+    touch-action: auto !important;
+  }
+  /* Pulsante zoom mobile */
+  .chart-zoom-btn {
+    position: absolute; top: 6px; right: 8px; z-index: 999;
+    background: rgba(0,114,255,0.18); border: 1px solid rgba(0,114,255,0.4);
+    color: rgba(255,255,255,0.8); border-radius: 6px;
+    font-size: 0.65rem; padding: 3px 7px; cursor: pointer;
+    backdrop-filter: blur(4px);
+    transition: background 0.2s;
+  }
+  .chart-zoom-btn:active { background: rgba(0,114,255,0.45); }
+  .chart-wrapper { position: relative; }
+
+  /* ---- RESPONSIVE: tablet ---- */
+  @media (max-width:960px) {
     .block-container {
       padding-left:0.6rem !important;
       padding-right:0.6rem !important;
-      padding-top:1rem !important;
+      padding-top:0.8rem !important;
     }
-    .kpi-grid { gap:0.75rem; }
+    .kpi-grid { gap:0.7rem; }
     .kpi-value { font-size:1.5rem; }
-    .kpi-card  { padding:1.1rem; }
+    .kpi-card  { padding:1.0rem; }
     .kpi-title { font-size:0.75rem; }
+    .kpi-subtitle { font-size:0.7rem; }
   }
-  @media (max-width:480px) {
-    .kpi-grid { grid-template-columns:1fr 1fr; gap:0.6rem; }
-    .kpi-value { font-size:1.3rem; }
-    .kpi-card  { padding:0.9rem; }
+  /* ---- RESPONSIVE: smartphone ---- */
+  @media (max-width:540px) {
+    .block-container {
+      padding-left:0.3rem !important;
+      padding-right:0.3rem !important;
+      padding-top:0.6rem !important;
+    }
+    .kpi-grid {
+      grid-template-columns: 1fr 1fr;
+      gap:0.5rem;
+    }
+    .kpi-value    { font-size:1.2rem; }
+    .kpi-card     { padding:0.75rem 0.9rem; border-radius:12px; }
+    .kpi-title    { font-size:0.68rem; letter-spacing:0.8px; }
+    .kpi-subtitle { display:none; }        /* nasconde subtitle su schermi piccoli */
+    /* Sidebar testo più grande su mobile */
+    [data-testid="stSidebar"] { font-size:0.95rem; }
+    /* Grafici full-width su mobile */
+    .stPlotlyChart { border-radius:10px; }
+    /* Form e filtri */
+    [data-testid="stMultiSelect"] label,
+    [data-testid="stSelectbox"] label,
+    [data-testid="stRadio"] label { font-size:0.85rem !important; }
+    /* Bottoni più grandi per il touch */
+    [data-testid="stButton"] button { min-height:44px; font-size:0.9rem; }
+    /* Tabelle scroll orizzontale */
+    [data-testid="stDataFrame"] { overflow-x: auto; }
+    /* Subheader più compatti */
+    h3 { font-size:1.1rem !important; }
+    h2 { font-size:1.25rem !important; }
   }
 </style>
+<script>
+// Blocca zoom Plotly su touch mobile — attivabile con pulsante 🔍
+(function() {
+  function patchPlotlyCharts() {
+    var plots = document.querySelectorAll('.js-plotly-plot:not(.touch-patched)');
+    plots.forEach(function(plot) {
+      plot.classList.add('touch-patched');
+
+      // Crea pulsante zoom toggle
+      var wrapper = plot.closest('[data-testid="stPlotlyChart"]') || plot.parentElement;
+      if (wrapper && !wrapper.querySelector('.chart-zoom-btn')) {
+        wrapper.style.position = 'relative';
+        var btn = document.createElement('button');
+        btn.className = 'chart-zoom-btn';
+        btn.innerHTML = '🔍 Zoom';
+        btn.title = 'Attiva/disattiva zoom con le dita';
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var active = plot.classList.toggle('zoom-enabled');
+          btn.innerHTML = active ? '🔒 Scorri' : '🔍 Zoom';
+          btn.style.background = active
+            ? 'rgba(255,107,157,0.3)'
+            : 'rgba(0,114,255,0.18)';
+        });
+        wrapper.appendChild(btn);
+      }
+    });
+  }
+  // Richiama ogni 2s per catturare grafici aggiunti dinamicamente
+  setInterval(patchPlotlyCharts, 2000);
+  document.addEventListener('DOMContentLoaded', patchPlotlyCharts);
+})();
+</script>
 """, unsafe_allow_html=True)
 
 
@@ -561,28 +641,36 @@ _GROQ_MODELS   = [
 ]
 
 
-@st.cache_resource
 def _get_ai_client():
     """
-    Restituisce (client, provider, model_name, error).
-    Priorità: Groq (free) → Gemini (se billing attivo).
+    Restituisce (client, provider, model_name, error, diag).
+    Priorità: Groq (free) → Gemini (fallback).
+    NON usa cache_resource: deve rilevare ogni volta se groq è disponibile.
     """
-    # --- GROQ (primario) ---
+    diag_lines = []
+
+    # --- GROQ (primario, gratuito) ---
     groq_key = st.secrets.get("groq_api_key", "")
-    if groq_key:
+    if not groq_key:
+        diag_lines.append("groq_api_key: non trovato in Secrets")
+    else:
+        diag_lines.append("groq_api_key: trovato ✅")
         try:
-            from groq import Groq
+            from groq import Groq  # pacchetto groq in requirements.txt
             client = Groq(api_key=groq_key)
-            # Test veloce: prova il modello principale
-            return client, "groq", _GROQ_MODELS[0], None
+            diag_lines.append(f"Groq client OK, modello: {_GROQ_MODELS[0]}")
+            return client, "groq", _GROQ_MODELS[0], None, "\n".join(diag_lines)
         except ImportError:
-            pass  # groq non installato → prova Gemini
+            diag_lines.append("❌ pacchetto 'groq' non installato — aggiungi a requirements.txt e fai redeploy")
         except Exception as e:
-            pass  # chiave invalida → prova Gemini
+            diag_lines.append(f"❌ Groq init error: {e}")
 
     # --- GEMINI (fallback) ---
     gemini_key = st.secrets.get("gemini_api_key", "")
-    if gemini_key:
+    if not gemini_key:
+        diag_lines.append("gemini_api_key: non trovato")
+    else:
+        diag_lines.append("gemini_api_key: trovato ✅")
         try:
             genai.configure(api_key=gemini_key)
             for mname in ["gemini-2.0-flash-lite", "gemini-2.5-flash"]:
@@ -594,18 +682,25 @@ def _get_ai_client():
                             temperature=0.1, top_p=0.85, max_output_tokens=4096
                         ),
                     )
-                    return m, "gemini", mname, None
-                except Exception:
+                    diag_lines.append(f"Gemini OK, modello: {mname}")
+                    return m, "gemini", mname, None, "\n".join(diag_lines)
+                except Exception as em:
+                    diag_lines.append(f"  {mname}: {em}")
                     continue
         except Exception as e:
-            return None, None, None, f"Gemini error: {e}"
+            diag_lines.append(f"❌ Gemini config error: {e}")
 
-    return None, None, None, (
-        "Nessuna API key trovata.\n"
-        "Aggiungi in Streamlit Secrets:\n"
-        "• groq_api_key = \"gsk_...\" (gratuito → console.groq.com)\n"
-        "• oppure gemini_api_key = \"AIza...\" (Google AI Studio)"
+    err_msg = (
+        "Nessuna API funzionante trovata.\n\n"
+        "**Setup Groq (consigliato — gratuito):**\n"
+        "1. Vai su https://console.groq.com → crea account gratuito\n"
+        "2. API Keys → Create API Key → copia `gsk_...`\n"
+        "3. Streamlit Cloud → App Settings → Secrets → aggiungi:\n"
+        "   `groq_api_key = \"gsk_la_tua_chiave\"`\n"
+        "4. Riavvia l'app (Manage app → Reboot)\n\n"
+        "**Diagnostica:**\n" + "\n".join(diag_lines)
     )
+    return None, None, None, err_msg, "\n".join(diag_lines)
 
 
 def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
@@ -876,9 +971,11 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
     if not (user_text or audio_bytes):
         return
 
-    client, provider, model_name, err = _get_ai_client()
+    client, provider, model_name, err, diag = _get_ai_client()
     if client is None:
         st.sidebar.warning(f"⚠️ AI non configurata\n\n{err}")
+        with st.sidebar.expander("🔍 Diagnostica AI", expanded=True):
+            st.code(diag, language=None)
         return
 
     context_text = _build_compact_context(context_df, context_label)
