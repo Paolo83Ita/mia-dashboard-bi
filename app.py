@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v56.0 - Context AI con aggregazioni reali (top clienti/prodotti/fornitori, trend mensile))
+# 1. CONFIGURAZIONE & STILE (v57.0 - Cross-aggregazione prodotto×cliente, fix clipboard copia chat)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v56.0",
+    page_title="EITA Analytics Pro v57.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -594,6 +594,8 @@ Il tuo contesto contiene dati AGGREGATI reali estratti dal database:
 - TOP 15 per PRODOTTO: fatturato e kg per ogni prodotto
 - TOP 15 per FORNITORE: spesa e kg per ogni fornitore (pagina Acquisti)
 - TREND MENSILE: dati aggregati mese per mese (ultimi 24 mesi)
+- TOP CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti che lo hanno comprato di più
+- TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati
 - Aggregazioni per altri raggruppamenti significativi (entità, gruppo prodotto, ecc.)
 
 Le colonne numeriche usano questi nomi:
@@ -604,7 +606,9 @@ Le colonne numeriche usano questi nomi:
 REGOLE:
 1. USA i dati aggregati nel contesto per rispondere DIRETTAMENTE. Non dire "non ho i dati" se ci sono tabelle TOP N nel contesto.
 2. Per "top 5 clienti" → leggi la tabella TOP 15 per CLIENTE e prendi i primi 5.
-3. Per "fornitore più costoso" → leggi TOP 15 per FORNITORE.
+3. Per "chi ha comprato X?" → leggi la sezione TOP CLIENTI per PRODOTTO, trova il prodotto e mostra i clienti.
+4. Per "cosa ha comprato cliente Y?" → leggi TOP PRODOTTI per CLIENTE, trova il cliente.
+5. Per "fornitore più costoso" → leggi TOP 15 per FORNITORE.
 4. Per "trend" o "andamento mensile" → usa la sezione TREND MENSILE.
 5. Cita sempre i valori esatti con unità: € 1.234.567 o 1.234 Kg.
 6. Rispondi in italiano, usa tabelle Markdown per dati strutturati.
@@ -970,6 +974,59 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
         if len("\n".join(parts)) > 3500:
             break  # limite token
 
+    # --- Cross: TOP CLIENTI per ogni PRODOTTO ---
+    # Risponde a: "Chi ha comprato più KALTBACH CREMOSO?"
+    if col_cliente and col_prodotto and val_cols:
+        try:
+            # Prendi i top 12 prodotti per importo
+            top_prods = (df.groupby(col_prodotto, observed=True)[val_cols[0]]
+                          .sum().sort_values(ascending=False).head(12).index.tolist())
+            cross_lines = ["\nTOP CLIENTI per PRODOTTO (incrociato — risponde a 'chi ha comprato X?'):"]
+            for prod in top_prods:
+                df_prod = df[df[col_prodotto] == prod]
+                cli_agg = (df_prod.groupby(col_cliente, observed=True)[val_cols]
+                                  .sum(numeric_only=True)
+                                  .reset_index()
+                                  .sort_values(val_cols[0], ascending=False)
+                                  .head(5))
+                if cli_agg.empty:
+                    continue
+                cross_lines.append(f"\n  Prodotto: {prod}")
+                for _, row in cli_agg.iterrows():
+                    vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
+                    cross_lines.append(f"    → {str(row[col_cliente])[:40]}: {vals}")
+            if len(cross_lines) > 1:
+                parts.append("\n".join(cross_lines))
+        except Exception as e:
+            parts.append(f"[Cross-agg error: {e}]")
+
+    # --- Cross: TOP PRODOTTI per ogni CLIENTE (top 8 clienti) ---
+    # Risponde a: "Cosa ha comprato di più Esselunga?"
+    if col_cliente and col_prodotto and val_cols:
+        try:
+            top_clients = (df.groupby(col_cliente, observed=True)[val_cols[0]]
+                            .sum().sort_values(ascending=False).head(8).index.tolist())
+            cross2_lines = ["\nTOP PRODOTTI per CLIENTE (incrociato — risponde a 'cosa ha comprato X?'):"]
+            for cli in top_clients:
+                df_cli = df[df[col_cliente] == cli]
+                prod_agg = (df_cli.groupby(col_prodotto, observed=True)[val_cols]
+                                  .sum(numeric_only=True)
+                                  .reset_index()
+                                  .sort_values(val_cols[0], ascending=False)
+                                  .head(5))
+                if prod_agg.empty:
+                    continue
+                cross2_lines.append(f"\n  Cliente: {cli}")
+                for _, row in prod_agg.iterrows():
+                    vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
+                    cross2_lines.append(f"    → {str(row[col_prodotto])[:40]}: {vals}")
+                if len("\n".join(parts)) > 5000:
+                    break  # limite token assoluto
+            if len(cross2_lines) > 1:
+                parts.append("\n".join(cross2_lines))
+        except Exception as e:
+            parts.append(f"[Cross-agg2 error: {e}]")
+
     # --- Trend mensile ---
     if col_data and val_cols:
         parts.append(_monthly_trend(df, col_data, val_cols[:2]))
@@ -1267,11 +1324,43 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                     st.session_state["ai_chat_history"] = []
                     st.rerun()
             with col_b:
-                if st.button("📋 Copia", key="copy_ai_chat", use_container_width=True):
-                    st.code("\n\n".join(
-                        f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
-                        for m in st.session_state["ai_chat_history"]
-                    ), language=None)
+                if st.button("📋 Copia chat", key="copy_ai_chat", use_container_width=True):
+                    st.session_state["_do_copy_chat"] = True
+
+            # Clipboard copy via JS (eseguito fuori dai columns per avere spazio)
+            if st.session_state.get("_do_copy_chat"):
+                st.session_state["_do_copy_chat"] = False
+                chat_txt = "\n\n".join(
+                    f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
+                    for m in st.session_state["ai_chat_history"]
+                )
+                # Escape sicuro per inserimento in template JS
+                import json as _json
+                safe_js = _json.dumps(chat_txt)  # produce stringa JS valida con escape
+                import streamlit.components.v1 as _stc
+                _stc.html(
+                    f"""<script>
+                    (function(){{
+                      var txt = {safe_js};
+                      if(navigator.clipboard && navigator.clipboard.writeText){{
+                        navigator.clipboard.writeText(txt).then(function(){{
+                          document.getElementById('cpok').style.display='inline';
+                        }});
+                      }} else {{
+                        var ta=document.createElement('textarea');
+                        ta.value=txt; ta.style.position='fixed'; ta.style.opacity='0';
+                        document.body.appendChild(ta); ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                        document.getElementById('cpok').style.display='inline';
+                      }}
+                    }})();
+                    </script>
+                    <span id="cpok" style="color:#43e97b;font-size:0.78rem;display:none">
+                      ✅ Chat copiata negli appunti!
+                    </span>""",
+                    height=28,
+                )
         else:
             st.caption("Fai una domanda sui dati della pagina corrente.")
             st.caption("💡 Es: 'Top 5 clienti per fatturato' · 'Trend mensile' · 'Riepilogo per fornitore'")
