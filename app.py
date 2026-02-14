@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v53.0 - Groq test connessione reale, diagnostica sempre visibile, Plotly mobile config)
+# 1. CONFIGURAZIONE & STILE (v54.0 - Groq fix definitivo (no network test), fixedrange zoom mobile, fallback Groq→Gemini)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v53.0",
+    page_title="EITA Analytics Pro v54.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -612,45 +612,33 @@ _GROQ_MODELS   = [
 def _get_ai_client():
     """
     Restituisce (client, provider, model_name, error, diag).
-    Priorità: Groq (free) → Gemini (fallback).
-    NON usa cache_resource: deve rilevare ogni volta se groq è disponibile.
+    NESSUNA chiamata di rete qui — solo lettura secrets e import.
+    La verifica reale avviene in _call_ai_groq / _call_ai.
+    Priorità: Groq → Gemini.
     """
-    diag_lines = []
+    diag = []
 
-    # --- GROQ (primario, gratuito) ---
+    # --- GROQ ---
     groq_key = st.secrets.get("groq_api_key", "")
-    if not groq_key:
-        diag_lines.append("groq_api_key: non trovato in Secrets")
-    else:
-        diag_lines.append("groq_api_key: trovato ✅")
+    if groq_key:
         try:
             from groq import Groq
             client = Groq(api_key=groq_key)
-            # Test REALE: chiamata leggera per verificare auth + rete
-            # models.list() è gratuita, non consuma token
-            models = client.models.list()
-            available = [m.id for m in models.data]
-            diag_lines.append(f"Groq connessione OK — {len(available)} modelli disponibili")
-            # Scegli il primo modello disponibile tra quelli preferiti
-            chosen = next((m for m in _GROQ_MODELS if m in available), None)
-            if not chosen and available:
-                chosen = available[0]
-            if chosen:
-                diag_lines.append(f"Modello selezionato: {chosen}")
-                return client, "groq", chosen, None, "\n".join(diag_lines)
-            else:
-                diag_lines.append("❌ Nessun modello chat disponibile su Groq")
+            diag.append("groq_api_key: trovato ✅  |  pacchetto groq: importato ✅")
+            diag.append(f"Modello primario: {_GROQ_MODELS[0]}")
+            return client, "groq", _GROQ_MODELS[0], None, "\n".join(diag)
         except ImportError:
-            diag_lines.append("❌ Pacchetto 'groq' non installato — verifica requirements.txt e riavvia l'app")
+            diag.append("groq_api_key: trovato ✅  |  pacchetto groq: ❌ NON installato")
+            diag.append("→ Verifica che requirements.txt contenga 'groq' e fai Reboot app")
         except Exception as e:
-            diag_lines.append(f"❌ Groq errore connessione: {e}")
+            diag.append(f"groq_api_key: trovato ✅  |  Groq init error: {e}")
+    else:
+        diag.append("groq_api_key: ❌ non trovato nei Secrets")
+        diag.append("→ Aggiungi: groq_api_key = \"gsk_...\" in Streamlit Secrets")
 
     # --- GEMINI (fallback) ---
     gemini_key = st.secrets.get("gemini_api_key", "")
-    if not gemini_key:
-        diag_lines.append("gemini_api_key: non trovato")
-    else:
-        diag_lines.append("gemini_api_key: trovato ✅")
+    if gemini_key:
         try:
             genai.configure(api_key=gemini_key)
             for mname in ["gemini-2.0-flash-lite", "gemini-2.5-flash"]:
@@ -662,50 +650,61 @@ def _get_ai_client():
                             temperature=0.1, top_p=0.85, max_output_tokens=4096
                         ),
                     )
-                    diag_lines.append(f"Gemini OK, modello: {mname}")
-                    return m, "gemini", mname, None, "\n".join(diag_lines)
+                    diag.append(f"Gemini fallback: {mname} ✅")
+                    return m, "gemini", mname, None, "\n".join(diag)
                 except Exception as em:
-                    diag_lines.append(f"  {mname}: {em}")
+                    diag.append(f"  Gemini {mname}: {em}")
                     continue
         except Exception as e:
-            diag_lines.append(f"❌ Gemini config error: {e}")
+            diag.append(f"Gemini config error: {e}")
+    else:
+        diag.append("gemini_api_key: non trovato")
 
-    err_msg = (
-        "Nessuna API funzionante trovata.\n\n"
-        "**Setup Groq (consigliato — gratuito):**\n"
-        "1. Vai su https://console.groq.com → crea account gratuito\n"
-        "2. API Keys → Create API Key → copia `gsk_...`\n"
-        "3. Streamlit Cloud → App Settings → Secrets → aggiungi:\n"
-        "   `groq_api_key = \"gsk_la_tua_chiave\"`\n"
-        "4. Riavvia l'app (Manage app → Reboot)\n\n"
-        "**Diagnostica:**\n" + "\n".join(diag_lines)
-    )
-    return None, None, None, err_msg, "\n".join(diag_lines)
+    return None, None, None, (
+        "Nessuna API configurata.\n\n"
+        "Aggiungi nei Secrets Streamlit:\n"
+        "groq_api_key = \"gsk_...\"  (gratuito → console.groq.com)"
+    ), "\n".join(diag)
 
 
 # ---------------------------------------------------------------------------
-# Config Plotly mobile-safe: disabilita pinch-zoom accidentale.
-# scrollZoom=False blocca sia scroll wheel che pinch su mobile.
-# L'utente può comunque usare i pulsanti della toolbar (+/-) per zoomare.
+# Config Plotly: scrollZoom=False blocca il mouse wheel su desktop.
+# Per il pinch-to-zoom su mobile la soluzione AFFIDABILE è fixedrange=True
+# negli assi del layout — impedisce zoom nel motore Plotly stesso.
 # ---------------------------------------------------------------------------
-_PLOTLY_MOBILE_CONFIG = {
-    "scrollZoom":               False,   # no pinch-to-zoom su mobile
-    "doubleClick":              "reset", # doppio tap → reset vista
-    "displayModeBar":           "hover", # toolbar solo su hover/tap
-    "modeBarButtonsToRemove":   [        # rimuove zoom accidentale
-        "zoom2d", "pan2d", "select2d", "lasso2d",
-    ],
-    "responsive":               True,
-    "displaylogo":              False,
+_PLOTLY_CONFIG = {
+    "scrollZoom":             False,
+    "doubleClick":            "reset",
+    "displayModeBar":         "hover",
+    "modeBarButtonsToRemove": ["select2d", "lasso2d", "autoScale2d"],
+    "responsive":             True,
+    "displaylogo":            False,
 }
 
 
-def _plot(fig, key: str = None) -> None:
-    """Wrapper per st.plotly_chart con config mobile ottimizzata."""
+def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
+    """
+    Wrapper st.plotly_chart con fix mobile anti-zoom accidentale.
+    allow_zoom=None → legge da session_state (toggle sidebar).
+    allow_zoom=True/False → override esplicito.
+    """
+    # Legge preferenza zoom dal session_state
+    if allow_zoom is None:
+        allow_zoom = st.session_state.get("chart_zoom_enabled", False)
+
+    if not allow_zoom:
+        # fixedrange=True è l'UNICO metodo affidabile per bloccare
+        # il pinch-zoom su mobile — funziona a livello di renderer Plotly.
+        try:
+            fig.update_xaxes(fixedrange=True)
+            fig.update_yaxes(fixedrange=True)
+        except Exception:
+            pass
+
     st.plotly_chart(
         fig,
         use_container_width=True,
-        config=_PLOTLY_MOBILE_CONFIG,
+        config=_PLOTLY_CONFIG,
         key=key,
     )
 
@@ -757,83 +756,133 @@ def _transcribe_audio_groq(client, audio_bytes: bytes) -> str:
         return f"[Errore trascrizione: {e}]"
 
 
+def _call_groq(client, model_name: str, history: list,
+               prompt: str, audio_bytes: bytes = None,
+               max_retries: int = 2):
+    """Chiama Groq con retry. Prova prima 70B poi 8B su rate limit."""
+    final_prompt = prompt
+    if audio_bytes:
+        transcript = _transcribe_audio_groq(client, audio_bytes)
+        final_prompt = f"[Domanda vocale trascritta]: {transcript}\n\n{prompt}"
+
+    models_to_try = list(dict.fromkeys([model_name] + _GROQ_MODELS))  # dedup, order preserved
+    current_model = models_to_try[0]
+
+    for attempt in range(max_retries + 1):
+        try:
+            messages = [{"role": "system", "content": _AI_SYSTEM_PROMPT}]
+            for m in history:
+                messages.append({
+                    "role":    "assistant" if m["role"] == "model" else m["role"],
+                    "content": m["text"],
+                })
+            messages.append({"role": "user", "content": final_prompt})
+            resp = client.chat.completions.create(
+                model=current_model,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=4096,
+            )
+            answer  = resp.choices[0].message.content
+            in_tok  = getattr(resp.usage, "prompt_tokens",     0) or 0
+            out_tok = getattr(resp.usage, "completion_tokens", 0) or 0
+            return answer, in_tok, out_tok, None, current_model
+        except Exception as e:
+            err_str = str(e)
+            is_rate  = "429" in err_str or "rate_limit" in err_str.lower()
+            is_model = "model" in err_str.lower() and ("not found" in err_str.lower() or "does not exist" in err_str.lower())
+            if (is_rate or is_model) and attempt < max_retries:
+                # Prossimo modello nella lista
+                idx = models_to_try.index(current_model) if current_model in models_to_try else 0
+                if idx + 1 < len(models_to_try):
+                    current_model = models_to_try[idx + 1]
+                if is_rate:
+                    wait_s = 15
+                    m_wait = re.search(r"retry in (\d+)", err_str)
+                    if m_wait:
+                        wait_s = min(int(m_wait.group(1)), 45)
+                    time.sleep(wait_s)
+                continue
+            return None, 0, 0, err_str, current_model
+    return None, 0, 0, "Quota esaurita.", current_model
+
+
+def _call_gemini(client, history: list, prompt: str, audio_bytes: bytes = None):
+    """Chiama Gemini con retry su 429."""
+    gem_history = [
+        {"role": m["role"], "parts": [m["text"]]}
+        for m in history
+    ]
+    if audio_bytes:
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        content = [
+            {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
+            {"text": prompt or "Analizza l'audio."},
+        ]
+    else:
+        content = prompt
+    for attempt in range(3):
+        try:
+            chat = client.start_chat(history=gem_history)
+            resp = chat.send_message(content)
+            usage   = getattr(resp, "usage_metadata", None)
+            in_tok  = getattr(usage, "prompt_token_count",    0) or 0
+            out_tok = getattr(usage, "candidates_token_count",0) or 0
+            return resp.text, in_tok, out_tok, None
+        except Exception as e:
+            err_str = str(e)
+            if ("429" in err_str) and attempt < 2:
+                time.sleep(20)
+                continue
+            return None, 0, 0, err_str
+    return None, 0, 0, "Quota Gemini esaurita."
+
+
 def _call_ai(client, provider: str, model_name: str,
              history: list, prompt: str,
              audio_bytes: bytes = None,
              max_retries: int = 2):
     """
-    Chiama Groq o Gemini con retry automatico su 429.
-    Se audio_bytes fornito (Groq): trascrive prima con Whisper, poi chiede.
-    Restituisce (answer, input_tokens, output_tokens, error).
+    Wrapper principale: chiama Groq o Gemini.
+    Se Groq fallisce per motivo non-quota, tenta fallback su Gemini
+    (se gemini_api_key è nei secrets) prima di mostrare errore.
+    Restituisce (answer, in_tok, out_tok, error, provider_used, model_used).
     """
-    # Gestione voce: Groq trascrive con Whisper separato
-    final_prompt = prompt
-    if audio_bytes and provider == "groq":
-        transcript = _transcribe_audio_groq(client, audio_bytes)
-        final_prompt = f"[Domanda vocale trascritta]: {transcript}\n\n{prompt}"
-    elif audio_bytes and provider == "gemini":
-        # Gemini: audio inline
-        audio_b64 = base64.b64encode(audio_bytes).decode()
-        # per Gemini gestiamo sotto
+    if provider == "groq":
+        answer, in_tok, out_tok, err, model_used = _call_groq(
+            client, model_name, history, prompt, audio_bytes, max_retries
+        )
+        if answer:
+            return answer, in_tok, out_tok, None, "groq", model_used
 
-    for attempt in range(max_retries + 1):
-        try:
-            if provider == "groq":
-                messages = [{"role": "system", "content": _AI_SYSTEM_PROMPT}]
-                for m in history:
-                    messages.append({
-                        "role":    "assistant" if m["role"] == "model" else m["role"],
-                        "content": m["text"],
-                    })
-                messages.append({"role": "user", "content": final_prompt})
+        # Groq fallito: prova Gemini automaticamente
+        gemini_key = st.secrets.get("gemini_api_key", "")
+        if gemini_key:
+            try:
+                genai.configure(api_key=gemini_key)
+                for gm in ["gemini-2.0-flash-lite", "gemini-2.5-flash"]:
+                    try:
+                        gem_client = genai.GenerativeModel(
+                            model_name=gm,
+                            system_instruction=_AI_SYSTEM_PROMPT,
+                            generation_config=genai.GenerationConfig(
+                                temperature=0.1, top_p=0.85, max_output_tokens=4096
+                            ),
+                        )
+                        ans2, it2, ot2, err2 = _call_gemini(gem_client, history, prompt, audio_bytes)
+                        if ans2:
+                            return ans2, it2, ot2, None, "gemini_fallback", gm
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        # Tutto fallito
+        is_quota = "429" in (err or "") or "rate_limit" in (err or "").lower()
+        return None, 0, 0, err, "groq", model_used
 
-                resp = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=0.1,
-                    max_tokens=4096,
-                )
-                answer = resp.choices[0].message.content
-                in_tok = getattr(resp.usage, "prompt_tokens",     0) or 0
-                out_tok= getattr(resp.usage, "completion_tokens", 0) or 0
-                return answer, in_tok, out_tok, None
-
-            else:  # gemini
-                gem_history = [
-                    {"role": m["role"], "parts": [m["text"]]}
-                    for m in history
-                ]
-                if audio_bytes:
-                    audio_b64 = base64.b64encode(audio_bytes).decode()
-                    content = [
-                        {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
-                        {"text": final_prompt or "Analizza l'audio e rispondi."},
-                    ]
-                else:
-                    content = final_prompt
-                chat = client.start_chat(history=gem_history)
-                resp = chat.send_message(content)
-                usage = getattr(resp, "usage_metadata", None)
-                in_tok  = getattr(usage, "prompt_token_count",     0) or 0
-                out_tok = getattr(usage, "candidates_token_count", 0) or 0
-                return resp.text, in_tok, out_tok, None
-
-        except Exception as e:
-            err_str = str(e)
-            # Rate limit → attendi e riprova
-            if ("429" in err_str or "rate_limit" in err_str.lower()) and attempt < max_retries:
-                wait_s = 20
-                m_wait = re.search(r"retry in (\d+)", err_str)
-                if m_wait:
-                    wait_s = min(int(m_wait.group(1)), 60)
-                time.sleep(wait_s)
-                # Se Groq ha esaurito il modello 70B, prova 8B
-                if provider == "groq" and model_name == _GROQ_MODELS[0] and len(_GROQ_MODELS) > 1:
-                    model_name = _GROQ_MODELS[1]
-                continue
-            return None, 0, 0, err_str
-
-    return None, 0, 0, "Quota esaurita dopo i retry."
+    else:  # gemini primario
+        ans, it, ot, err = _call_gemini(client, history, prompt, audio_bytes)
+        return ans, it, ot, err, "gemini", model_name
 
 
 def _tts_audio(text: str) -> bytes | None:
@@ -919,18 +968,37 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
     # Mostriamo subito quale AI è attiva prima ancora del token counter
     _client_chk, _prov_chk, _mod_chk, _err_chk, _diag_chk = _get_ai_client()
     if _client_chk is not None:
-        prov_color = "#43e97b" if _prov_chk == "groq" else "#f7971e"
-        prov_label = "🟡 Groq (free)" if _prov_chk == "groq" else "🔵 Gemini"
+        # Dopo la prima chiamata, mostra il provider realmente usato
+        actual_prov  = st.session_state.get("ai_last_provider", _prov_chk)
+        actual_model = st.session_state.get("ai_last_model",    _mod_chk)
+        configured_prov = _prov_chk  # quello configurato dai secrets
+
+        if actual_prov == "gemini_fallback":
+            prov_color = "#f7971e"
+            prov_label = "🔵 Gemini (fallback da Groq)"
+        elif actual_prov == "groq":
+            prov_color = "#43e97b"
+            prov_label = "🟡 Groq (free)"
+        else:
+            prov_color = "#f7971e"
+            prov_label = "🔵 Gemini"
+
+        # Se configurato Groq ma non ancora usato: mostra "pronto"
+        status_txt = "✅ Attivo" if st.session_state.get("ai_chat_history") else "⚙️ Configurato"
         st.sidebar.markdown(
             f'''<div style="font-size:0.72rem; padding:5px 10px; margin:2px 0 6px 0;
                 background:rgba(0,0,0,0.2); border-radius:7px;
                 border-left:3px solid {prov_color}; color:rgba(255,255,255,0.85);">
-            ✅ AI attiva: <b>{prov_label}</b> · {_mod_chk}
+            {status_txt}: <b>{prov_label}</b><br>
+            <span style="opacity:0.7">{actual_model}</span>
             </div>''',
             unsafe_allow_html=True
         )
+        # Mostra diagnostica solo su richiesta
+        with st.sidebar.expander("🔍 Info provider", expanded=False):
+            st.code(_diag_chk, language=None)
     else:
-        st.sidebar.warning("⚙️ AI non configurata — espandi Diagnostica")
+        st.sidebar.error("⚙️ AI non configurata")
         with st.sidebar.expander("🔍 Diagnostica AI", expanded=True):
             st.code(_diag_chk, language=None)
 
@@ -1010,16 +1078,19 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                for m in st.session_state["ai_chat_history"]]
     prompt_txt = (user_text or "") + context_text
 
-    with st.sidebar, st.spinner(f"🤖 {provider.capitalize()} sta elaborando..."):
-        answer, in_tok, out_tok, err_msg = _call_ai(
+    with st.sidebar, st.spinner("🤖 Elaborazione in corso..."):
+        answer, in_tok, out_tok, err_msg, prov_used, mod_used = _call_ai(
             client, provider, model_name,
             history, prompt_txt, audio_bytes=audio_bytes
         )
 
     if answer:
-        _update_token_stats(in_tok, out_tok, provider, model_name)
+        _update_token_stats(in_tok, out_tok, prov_used, mod_used)
+        # Salva provider realmente usato (per badge)
+        st.session_state["ai_last_provider"] = prov_used
+        st.session_state["ai_last_model"]    = mod_used
         audio_out = _tts_audio(answer) if st.session_state.get("ai_speak") else None
-        display_q = f"[🎤 {voice_mode and 'Vocale' or ''}] {user_text or '(audio)'}" if voice_mode else user_text
+        display_q = f"[🎤 Vocale] {user_text or ''}" if voice_mode else user_text
         st.session_state["ai_chat_history"].append(
             {"role": "user",  "text": display_q, "voice": voice_mode}
         )
@@ -1031,14 +1102,15 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
         is_quota = any(x in (err_msg or "") for x in ["429", "rate_limit", "quota"])
         if is_quota:
             st.sidebar.warning(
-                f"⚠️ **Quota esaurita ({provider}).**\n\n"
-                "**Soluzioni:**\n"
-                "1. Attendi 1 min e riprova (rolling window)\n"
-                "2. La domanda seguente userà automaticamente il modello più leggero\n"
-                "3. Groq reset: ore 09:00 IT · console.groq.com → Usage"
+                f"⚠️ **Quota esaurita ({prov_used}).**\n\n"
+                "Reset: ore **09:00 IT** (inverno) / 10:00 IT (estate).\n\n"
+                "**Ora puoi:**\n"
+                "1. Attendere 1 minuto (rolling window 60s)\n"
+                "2. Filtrare i dati a meno righe\n"
+                "3. Monitorare: console.groq.com/usage"
             )
         else:
-            st.sidebar.error(f"Errore: {err_msg}")
+            st.sidebar.error(f"Errore AI [{prov_used}]: {err_msg}")
 
 
 
@@ -1047,6 +1119,19 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
 # 5. NAVIGAZIONE
 # ==========================================================================
 st.sidebar.title("🚀 EITA Dashboard")
+st.sidebar.markdown("---")
+
+# Toggle zoom grafici (mobile-friendly)
+if "chart_zoom_enabled" not in st.session_state:
+    st.session_state["chart_zoom_enabled"] = False
+
+_zoom_val = st.sidebar.checkbox(
+    "🔍 Abilita zoom grafici (mobile)",
+    value=st.session_state["chart_zoom_enabled"],
+    key="chart_zoom_cb",
+    help="Su mobile: disattivo = scorri pagina | attivo = zooma/sposta grafici"
+)
+st.session_state["chart_zoom_enabled"] = _zoom_val
 st.sidebar.markdown("---")
 
 # AI Assistant sempre visibile in cima (prima della navigazione pagine)
