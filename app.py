@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v61.0 - BOTTOM aggregazione, indice prodotti fuzzy, fix copia con st.code nativo)
+# 1. CONFIGURAZIONE & STILE (v62.0 - Analisi promo vs normale nel contesto, copia expander nativa sempre visibile)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v61.0",
+    page_title="EITA Analytics Pro v62.0",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -637,9 +637,17 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 8. Per "trend/andamento" → leggi TREND MENSILE.
 9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
 10. Usa tabelle Markdown per confronti multi-riga.
-11. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
+11. PROMO vs NORMALE: la sezione "ANALISI PROMO vs NORMALE" mostra per ogni cliente/prodotto:
+    - Totale €: fatturato complessivo
+    - Promo €: righe con almeno uno sconto (Sconto7 o Sconto4) diverso da zero
+    - Normale €: righe con tutti gli sconti a zero
+    - % Promo: percentuale del fatturato venduto in promozione
+    Per "chi ha comprato X più in promo?" → leggi "CROSS: % PROMO per PRODOTTO × CLIENTE"
+    e trova il prodotto X, poi ordina per "% promo" decrescente.
+    Per "% promo per cliente" → leggi la tabella ANALISI PROMO vs NORMALE per CLIENTE.
+12. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
     dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
-12. NON inventare valori, NON calcolare stime non supportate dai dati.
+13. NON inventare valori, NON calcolare stime non supportate dai dati.
 """
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1111,96 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
     if col_data and val_cols:
         parts.append(_monthly_trend(df, col_data, val_cols[:2]))
 
+    # --- Analisi PROMO vs NORMALE (solo se le colonne sconto sono presenti) ---
+    # Risponde a: "chi ha comprato X più in promo?" / "% promo per cliente"
+    col_s7 = next((c for c in df.columns if "sconto7" in c.lower() or "promozionali" in c.lower()), None)
+    col_s4 = next((c for c in df.columns if "sconto4" in c.lower() or "free" in c.lower() and "sconto" in c.lower()), None)
+    if col_s7 and col_cliente and val_cols:
+        try:
+            df_tmp = df.copy()
+            # Identifica righe promo: almeno uno sconto != 0
+            if col_s4 and col_s4 in df_tmp.columns:
+                is_promo = (df_tmp[col_s7].fillna(0) != 0) | (df_tmp[col_s4].fillna(0) != 0)
+            else:
+                is_promo = df_tmp[col_s7].fillna(0) != 0
+            df_tmp["__tipo__"] = is_promo.map({True: "Promo", False: "Normale"})
+
+            # Aggregazione per cliente: totale, promo, normale, % promo
+            grp = df_tmp.groupby(col_cliente, observed=True)
+            tot_imp = grp[val_cols[0]].sum()
+            promo_imp = df_tmp[is_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
+            norm_imp  = df_tmp[~is_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
+
+            combined = pd.DataFrame({
+                "Totale":  tot_imp,
+                "Promo":   promo_imp,
+                "Normale": norm_imp,
+            }).fillna(0)
+            combined["% Promo"] = (combined["Promo"] / combined["Totale"].replace(0, 1) * 100).round(1)
+            combined = combined.sort_values("% Promo", ascending=False).reset_index()
+
+            promo_lines = [f"\nANALISI PROMO vs NORMALE per CLIENTE"]
+            promo_lines.append(f"(Sconto7={col_s7}" + (f", Sconto4={col_s4}" if col_s4 else "") + ")")
+            promo_lines.append(f"Regola: Promo = almeno uno sconto != 0 | Normale = tutti sconti a zero")
+            promo_lines.append(f"{'Cliente':<40} | {'Totale €':>12} | {'Promo €':>12} | {'Normale €':>12} | {'% Promo':>8}")
+            promo_lines.append("-" * 95)
+            for _, row in combined.iterrows():
+                cli = str(row[col_cliente])[:39]
+                promo_lines.append(
+                    f"{cli:<40} | {_fmt_num(row['Totale']):>12} | {_fmt_num(row['Promo']):>12} | {_fmt_num(row['Normale']):>12} | {row['% Promo']:>7.1f}%"
+                )
+                if len("\n".join(promo_lines)) > 3000:
+                    promo_lines.append("  [...altri clienti omessi per limite token]")
+                    break
+            promo_lines.append("")
+            promo_lines.append("STESSO CALCOLO per PRODOTTO (top 20 prodotti per fatturato):")
+            promo_lines.append(f"{'Prodotto':<40} | {'Totale €':>12} | {'Promo €':>12} | {'Normale €':>12} | {'% Promo':>8}")
+            promo_lines.append("-" * 95)
+
+            if col_prodotto:
+                grp_p = df_tmp.groupby(col_prodotto, observed=True)
+                tot_p   = grp_p[val_cols[0]].sum()
+                promo_p = df_tmp[is_promo].groupby(col_prodotto, observed=True)[val_cols[0]].sum()
+                norm_p  = df_tmp[~is_promo].groupby(col_prodotto, observed=True)[val_cols[0]].sum()
+                comb_p  = pd.DataFrame({"Totale": tot_p, "Promo": promo_p, "Normale": norm_p}).fillna(0)
+                comb_p["% Promo"] = (comb_p["Promo"] / comb_p["Totale"].replace(0,1) * 100).round(1)
+                comb_p = comb_p.sort_values("Totale", ascending=False).head(20).reset_index()
+                for _, row in comb_p.iterrows():
+                    prod = str(row[col_prodotto])[:39]
+                    promo_lines.append(
+                        f"{prod:<40} | {_fmt_num(row['Totale']):>12} | {_fmt_num(row['Promo']):>12} | {_fmt_num(row['Normale']):>12} | {row['% Promo']:>7.1f}%"
+                    )
+
+            # Cross: % promo per ogni PRODOTTO × CLIENTE (top prodotti)
+            if col_prodotto:
+                promo_lines.append("\nCROSS: % PROMO per PRODOTTO × CLIENTE (risponde a 'chi ha comprato X più in promo?'):")
+                top_p_list = (df_tmp.groupby(col_prodotto, observed=True)[val_cols[0]]
+                               .sum().sort_values(ascending=False).head(15).index.tolist())
+                for prod in top_p_list:
+                    df_p = df_tmp[df_tmp[col_prodotto] == prod]
+                    is_p_promo = df_p["__tipo__"] == "Promo"
+                    cli_grp = df_p.groupby(col_cliente, observed=True)
+                    cli_tot   = cli_grp[val_cols[0]].sum()
+                    cli_promo = df_p[is_p_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
+                    cli_df = pd.DataFrame({"Totale": cli_tot, "Promo": cli_promo}).fillna(0)
+                    cli_df["% Promo"] = (cli_df["Promo"] / cli_df["Totale"].replace(0,1) * 100).round(1)
+                    cli_df = cli_df.sort_values("% Promo", ascending=False).reset_index()
+                    if cli_df.empty:
+                        continue
+                    promo_lines.append(f"\n  {prod}:")
+                    for _, row in cli_df.iterrows():
+                        promo_lines.append(
+                            f"    {str(row[col_cliente])[:40]}: {_fmt_num(row['Totale'])} totale | "
+                            f"{_fmt_num(row['Promo'])} promo | {row['% Promo']:.1f}% promo"
+                        )
+                    if len("\n".join(promo_lines)) > 6000:
+                        promo_lines.append("  [...omesso per limite token]")
+                        break
+
+            parts.append("\n".join(promo_lines))
+        except Exception as e:
+            parts.append(f"[Analisi promo error: {e}]")
+
     parts.append("\n" + "="*60 + " FINE CONTESTO =" + "="*44 + "\n")
     return "\n".join(p for p in parts if p)
 
@@ -1447,31 +1545,21 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                     if msg.get("audio_bytes"):
                         st.audio(msg["audio_bytes"], format="audio/mp3", autoplay=False)
             st.markdown('</div>', unsafe_allow_html=True)
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("🗑️ Pulisci", key="clear_ai_chat", use_container_width=True):
-                    st.session_state["ai_chat_history"] = []
-                    st.rerun()
-            with col_b:
-                if st.button("📋 Copia chat", key="copy_ai_chat", use_container_width=True):
-                    st.session_state["_do_copy_chat"] = True
+            # Pulsante Pulisci
+            if st.button("🗑️ Pulisci chat", key="clear_ai_chat", use_container_width=True):
+                st.session_state["ai_chat_history"] = []
+                st.rerun()
 
-            # Clipboard copy via JS (eseguito fuori dai columns per avere spazio)
-            if st.session_state.get("_do_copy_chat"):
-                st.session_state["_do_copy_chat"] = False
-                chat_txt = "\n\n".join(
-                    f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
-                    for m in st.session_state["ai_chat_history"]
-                )
-                # st.code() ha il pulsante copia nativo di Streamlit (📋 in alto a destra).
-                # navigator.clipboard NON funziona negli iframe sandboxed di stc.html().
-                st.session_state["_chat_copy_text"] = chat_txt
-
-            if st.session_state.get("_chat_copy_text"):
-                st.sidebar.caption("📋 Clicca l'icona copia in alto a destra del box:")
-                st.sidebar.code(st.session_state["_chat_copy_text"], language=None)
-                if st.sidebar.button("✖ Chiudi", key="close_copy_box", use_container_width=True):
-                    st.session_state["_chat_copy_text"] = ""
+            # Esporta / Copia chat — sempre visibile, usa pulsante 📋 nativo di st.code()
+            # NON usiamo button+rerun perché lo stato si perde nel ciclo di render.
+            # st.code() mostra un'icona 📋 in alto a destra che copia direttamente.
+            chat_txt_export = "\n\n".join(
+                f"{'Utente' if m['role']=='user' else 'AI'}: {m['text']}"
+                for m in st.session_state["ai_chat_history"]
+            )
+            with st.expander("📤 Esporta / Copia chat", expanded=False):
+                st.caption("Clicca l'icona 📋 in alto a destra del box per copiare tutto:")
+                st.code(chat_txt_export, language=None)
         else:
             st.caption("Fai una domanda sui dati della pagina corrente.")
             st.caption("💡 Es: 'Top 5 clienti per fatturato' · 'Trend mensile' · 'Riepilogo per fornitore'")
