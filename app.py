@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v72.0 - System prompt completo con legenda ufficiale, tabella dettaglio promo, entity globale p3: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v73.0 - Fix crash: empty label radio, context hard-cap 10k char, rimossi use_container_width: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v72.0",
+    page_title="EITA Analytics Pro v73.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -888,7 +888,6 @@ def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
 
     st.plotly_chart(
         fig,
-        use_container_width=True,
         config=cfg,
         key=key,
     )
@@ -1188,8 +1187,8 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
         # Solo colonne con cardinalità media (5-200 valori unici) → utili per groupby
         if 2 <= n_unique <= 200 and val_cols:
             parts.append(_agg_table(df, c, val_cols[:2], top_n=10, label=c))
-        if len("\n".join(parts)) > 3500:
-            break  # limite token
+        if len("\n".join(parts)) > 2000:
+            break  # limite token (8k char max totale)
 
     # --- Indice prodotti compatto (fuzzy match AI: "selection"→nome esatto) ---
     if col_prodotto:
@@ -1237,7 +1236,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                     _, last_row = list(cli_agg.tail(1).iterrows())[0]
                     vals = " | ".join(f"{_fmt_num(last_row[c])}" for c in val_cols if c in last_row.index)
                     cross_lines.append(f"    MINIMO: {str(last_row[col_cliente])[:40]}: {vals}")
-                if len("\n".join(parts) + "\n".join(cross_lines)) > 20000:
+                if len("\n".join(parts) + "\n".join(cross_lines)) > 8000:
                     cross_lines.append("  [... altri prodotti omessi per limite token]")
                     break
             if len(cross_lines) > 2:
@@ -1271,7 +1270,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                     for _, row in prod_agg.tail(3).iterrows():
                         vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
                         cross2_lines.append(f"      ↓ {str(row[col_prodotto])[:40]}: {vals}")
-                if len("\n".join(parts) + "\n".join(cross2_lines)) > 22000:
+                if len("\n".join(parts) + "\n".join(cross2_lines)) > 9000:
                     break
             if len(cross2_lines) > 2:
                 parts.append("\n".join(cross2_lines))
@@ -1284,10 +1283,10 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
     if col_cliente and col_prodotto and val_cols:
         try:
             cli_tot = (df.groupby(col_cliente, observed=True)[val_cols[0]]
-                        .sum().sort_values(ascending=False).head(10))
+                        .sum().sort_values(ascending=False).head(5))
             top10_lines = [
                 f"\nTOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE:",
-                f"(usa questa tabella per 'top N clienti' — dati PRE-CALCOLATI, leggili verbatim)",
+                f"(usa questa tabella per 'top N clienti' — dati PRE-CALCOLATI esatti)",
                 f"{'#':<3} | {'Cliente':<40} | {'Fatturato €':>14} | {'Prodotto Principale':<40} | {'Fat. Prod. Princ. €':>19}",
                 "-" * 130,
             ]
@@ -1371,7 +1370,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                 promo_lines.append(
                     f"{cli:<40} | {_fmt_num(row['Totale']):>10} | {_fmt_num(row['Promo']):>10} | {row['% Promo']:>11.1f}% | {_fmt_num(row['Tot€']):>12} | {_fmt_num(row['Promo€']):>12}"
                 )
-                if len("\n".join(promo_lines)) > 3500:
+                if len("\n".join(promo_lines)) > 2500:
                     promo_lines.append("  [...altri clienti omessi per limite token]")
                     break
             promo_lines.append("")
@@ -1397,7 +1396,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
             if col_prodotto:
                 promo_lines.append(f"\nCROSS: % PROMO per PRODOTTO × CLIENTE (% su {_metric_label} = UGUALE a donut):")
                 top_p_list = (df_tmp.groupby(col_prodotto, observed=True)[_eur_col or _metric_col]
-                               .sum().sort_values(ascending=False).head(40).index.tolist())
+                               .sum().sort_values(ascending=False).head(15).index.tolist())
                 for prod in top_p_list:
                     df_p = df_tmp[df_tmp[col_prodotto] == prod]
                     is_p_promo = df_p["__tipo__"] == "In Promozione"
@@ -1415,7 +1414,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                         promo_lines.append(
                             f"    {str(row[col_cliente])[:38]}: {_fmt_num(row['TotKg'])} Kg tot / {_fmt_num(row['PromoKg'])} Kg promo ({row['% Promo']:.1f}%) / {_fmt_num(row['Tot€'])} €"
                         )
-                    if len("\n".join(promo_lines)) > 25000:
+                    if len("\n".join(promo_lines)) > 3500:
                         promo_lines.append("  [...omesso per limite token]")
                         break
 
@@ -1424,7 +1423,14 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
             parts.append(f"[Analisi promo error: {e}]")
 
     parts.append("\n" + "="*60 + " FINE CONTESTO =" + "="*44 + "\n")
-    return "\n".join(p for p in parts if p)
+    full_ctx = "\n".join(p for p in parts if p)
+    # HARD CAP: tronca il contesto a 10000 char per non sforare i limiti Groq
+    # System prompt ~8000 char + contesto dati ~10000 char = ~18000 char ≈ 4500 token
+    # Groq free tier: 6000 TPM → safe margin con conversazione multi-turno
+    _MAX_CTX = 10000
+    if len(full_ctx) > _MAX_CTX:
+        full_ctx = full_ctx[:_MAX_CTX] + "\n...[CONTESTO TRONCATO PER LIMITE TOKEN — usa filtri per ridurre i dati]\n"
+    return full_ctx
 
 
 def _transcribe_audio_groq(client, audio_bytes: bytes) -> str:
@@ -1768,7 +1774,7 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                         st.audio(msg["audio_bytes"], format="audio/mp3", autoplay=False)
             st.markdown('</div>', unsafe_allow_html=True)
             # Pulsante Pulisci
-            if st.button("🗑️ Pulisci chat", key="clear_ai_chat", use_container_width=True):
+            if st.button("🗑️ Pulisci chat", key="clear_ai_chat"):
                 st.session_state["ai_chat_history"] = []
                 st.rerun()
 
@@ -1873,7 +1879,7 @@ st.sidebar.title("🖥️ EITA Dashboard")
 # Menu subito sotto il titolo
 st.sidebar.markdown("**Menu:**")
 page = st.sidebar.radio(
-    "",
+    "Navigazione",
     ["📊 Vendite & Fatturazione", "🎁 Analisi Customer Promo", "📦 Analisi Acquisti"],
     label_visibility="collapsed"
 )
@@ -2334,8 +2340,7 @@ if page == "📊 Vendite & Fatturazione":
                                 col_euro:            st.column_config.NumberColumn("Valore Tot",format="€ %.2f"),
                                 'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
                                 'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
-                            },
-                            use_container_width=True, hide_index=True
+                            }, hide_index=True
                         )
 
                         st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
@@ -2362,8 +2367,7 @@ if page == "📊 Vendite & Fatturazione":
                                     col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
                                     'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
                                     'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
-                                },
-                                use_container_width=True, hide_index=True
+                                }, hide_index=True
                             )
 
                         # Export flat (tutti i livelli — grouped su 2 chiavi)
@@ -2399,7 +2403,7 @@ if page == "📊 Vendite & Fatturazione":
                             'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med",format="€ %.2f"),
                             'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med",format="€ %.2f"),
                         },
-                        hide_index=True, use_container_width=True, height=500
+                        hide_index=True, height=500
                     )
                     st.download_button(
                         "📥 Scarica Dettaglio Excel (.xlsx)",
@@ -2765,8 +2769,7 @@ elif page == "🎁 Analisi Customer Promo":
                                 '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
                                 '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
                                 _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
-                            },
-                            use_container_width=True, hide_index=True, height=400
+                            }, hide_index=True, height=400
                         )
                         # Download Excel
                         if not _tbl_final.empty:
@@ -2897,7 +2900,7 @@ elif page == "🎁 Analisi Customer Promo":
                         p_qty_a: st.column_config.NumberColumn("Actual Qty",   format="%.0f"),
                         p_start: st.column_config.DateColumn("Inizio Sell-In", format="DD/MM/YYYY"),
                     },
-                    hide_index=True, use_container_width=True, height=500
+                    hide_index=True, height=500
                 )
                 st.download_button(
                     "📥 Scarica Report Promo Excel (.xlsx)",
@@ -3050,7 +3053,7 @@ elif page == "📦 Analisi Acquisti":
         st.sidebar.markdown("#### 💾 Salva Impostazioni")
         c_save, c_reset = st.sidebar.columns(2)
         with c_save:
-            if st.button("💾 Salva", key="btn_save_pu", use_container_width=True,
+            if st.button("💾 Salva", key="btn_save_pu",
                          help="Salva filtri e mappatura colonne per questa sessione"):
                 st.session_state["pu_settings"] = {
                     "pu_div":       pu_div,
@@ -3067,7 +3070,7 @@ elif page == "📦 Analisi Acquisti":
                 }
                 st.sidebar.success("Impostazioni salvate ✅")
         with c_reset:
-            if st.button("🔄 Reset", key="btn_reset_pu", use_container_width=True,
+            if st.button("🔄 Reset", key="btn_reset_pu",
                          help="Ripristina impostazioni di default"):
                 if "pu_settings" in st.session_state:
                     del st.session_state["pu_settings"]
@@ -3474,8 +3477,7 @@ elif page == "📦 Analisi Acquisti":
 
             st.dataframe(
                 df_final,
-                column_config=col_cfg,
-                use_container_width=True, height=520, hide_index=True
+                column_config=col_cfg, height=520, hide_index=True
             )
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
