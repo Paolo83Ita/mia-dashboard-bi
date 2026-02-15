@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v64.0 - Fix NaN bug donut promo, cache context builder, fallback AI più veloce)
+# 1. CONFIGURAZIONE & STILE (v65.0 - Fix data filter nel grafico promo, contesto AI pagina 2 allineato al periodo)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v64.0",
+    page_title="EITA Analytics Pro v65.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2247,15 +2247,40 @@ elif page == "🎁 Analisi Customer Promo":
             if f_col in df_pglobal.columns:
                 df_pglobal = df_pglobal[df_pglobal[f_col].astype(str).isin(vals)]
 
-        # Aggiorna contesto AI con i dati promo filtrati
+        # Aggiorna contesto AI con i dati vendite (filtrati per periodo promo)
+        # NOTA: usiamo i dati VENDITE (Sconto7/Sconto4) invece di df_pglobal,
+        # perché solo le vendite hanno la logica promo vs normale.
+        # df_pglobal contiene dati forecast che non rispondono alle domande promo.
         if not df_pglobal.empty:
             _periodo_promo = ""
             try:
                 _periodo_promo = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
             except Exception:
                 pass
-            st.session_state["ai_context_df"]    = df_pglobal
-            st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
+            # Preferisce dati vendite filtrati (più utili per analisi promo AI)
+            if df_sales_for_promo is not None and not df_sales_for_promo.empty:
+                # Filtra df_sales_for_promo per lo stesso periodo
+                _col_ds = next(
+                    (c for c in ['Data_Documento','Data','Date'] if c in df_sales_for_promo.columns), None
+                )
+                _df_ctx = df_sales_for_promo.copy()
+                if _col_ds and pd.api.types.is_datetime64_any_dtype(_df_ctx[_col_ds]):
+                    try:
+                        _df_ctx = _df_ctx[
+                            (_df_ctx[_col_ds].dt.date >= d_start) &
+                            (_df_ctx[_col_ds].dt.date <= d_end)
+                        ]
+                    except Exception:
+                        pass
+                if not _df_ctx.empty:
+                    st.session_state["ai_context_df"]    = _df_ctx
+                    st.session_state["ai_context_label"] = f"Vendite (per Promo){_periodo_promo}"
+                else:
+                    st.session_state["ai_context_df"]    = df_pglobal
+                    st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
+            else:
+                st.session_state["ai_context_df"]    = df_pglobal
+                st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
 
         if not df_pglobal.empty:
             tot_promo_uniche = (
@@ -2294,6 +2319,33 @@ elif page == "🎁 Analisi Customer Promo":
                     if col_ent and all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
                         st.caption("Filtra Dati Vendite per Grafico Promo")
 
+                        # ── FILTRO DATA ───────────────────────────────────────────────
+                        # CAUSA DISCREPANZA: df_sales_for_promo è caricato senza filtro
+                        # → contiene tutto lo storico. Il filtro data lo allinea al contesto AI.
+                        _col_data_s = next(
+                            (c for c in ['Data_Documento', 'Data', 'Date'] if c in df_s.columns),
+                            None
+                        )
+                        if _col_data_s and pd.api.types.is_datetime64_any_dtype(df_s[_col_data_s]):
+                            _min_ds = df_s[_col_data_s].min().date()
+                            _max_ds = df_s[_col_data_s].max().date()
+                            # Default: usa lo stesso range del filtro promo (d_start/d_end)
+                            try:
+                                _def_start_s = d_start if d_start >= _min_ds else _min_ds
+                                _def_end_s   = d_end   if d_end   <= _max_ds else _max_ds
+                            except Exception:
+                                _def_start_s, _def_end_s = _min_ds, _max_ds
+                            _ds, _de = safe_date_input(
+                                "0. Periodo Vendite", _def_start_s, _def_end_s,
+                                key="promo_sales_date_filter"
+                            )
+                            df_s = df_s[
+                                (df_s[_col_data_s].dt.date >= _ds) &
+                                (df_s[_col_data_s].dt.date <= _de)
+                            ]
+                            st.caption(f"📅 Periodo vendite: {_ds.strftime('%d/%m/%Y')} – {_de.strftime('%d/%m/%Y')} ({len(df_s):,} righe)")
+                        # ─────────────────────────────────────────────────────────────
+
                         all_ents       = sorted(df_s[col_ent].dropna().astype(str).unique())
                         default_ent    = ['EITA'] if 'EITA' in all_ents else []
                         sel_ent_chart  = st.multiselect(
@@ -2303,9 +2355,6 @@ elif page == "🎁 Analisi Customer Promo":
                         if sel_ent_chart:
                             df_s = df_s[df_s[col_ent].astype(str).isin(sel_ent_chart)]
 
-                        # FIX: filtri Prodotto/Cliente gated da Submit
-                        # Problema originale: sel_prod_chart e sel_cust_chart venivano
-                        # applicati subito senza richiedere "Aggiorna Grafico".
                         with st.form("promo_sales_chart_filter"):
                             all_prods      = sorted(df_s[col_art].dropna().astype(str).unique())
                             all_custs      = sorted(df_s[col_cli].dropna().astype(str).unique())
