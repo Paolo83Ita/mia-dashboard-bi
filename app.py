@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v67.0 - Filtro data globale unico per tutte le pagine, fine discrepanze di periodo)
+# 1. CONFIGURAZIONE & STILE (v69.0 - Fix bug render lag: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v67.0",
+    page_title="EITA Analytics Pro v69.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -637,16 +637,20 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 8. Per "trend/andamento" → leggi TREND MENSILE.
 9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
 10. Usa tabelle Markdown per confronti multi-riga.
-11. PROMO vs NORMALE: la sezione "ANALISI PROMO vs NORMALE" mostra per ogni cliente/prodotto:
-    - Tot Kg / Promo Kg: chilogrammi totali e in promozione
-    - % Promo(Kg): percentuale calcolata su Kg — IDENTICA al grafico donut della pagina 2
-    - Tot € / Promo €: euro totali e in promozione (metrica secondaria)
-    ⚠️ IMPORTANTE: % Promo è calcolata su Kg, NON su €.
-    Righe con Sconto=0 e €=0 ma Kg>0 (resi/campioni) abbassano il % Kg ma non quello €.
-    Questo è il motivo per cui % Kg e % € possono differire — usa SEMPRE % Kg per rispondere.
-    Per "chi ha comprato X più in promo?" → leggi "CROSS: % PROMO per PRODOTTO × CLIENTE"
-    e trova il prodotto X, poi ordina per "% Promo" (Kg) decrescente.
-    Per "% promo per cliente" → leggi la tabella ANALISI PROMO vs NORMALE per CLIENTE, colonna "% Promo(Kg)".
+11. PROMO vs NORMALE — REGOLE UFFICIALI (identiche al grafico donut):
+    CLASSIFICAZIONE righe (da colonne Sconto7_Promozionali e Sconto4_Free):
+      • Vendita Normale = s7=0 E s4=0 (o vuoti/NaN)
+      • In Promozione   = s7>0 OPPURE s4>0 (qualsiasi valore, ESCLUSI 99 e 100)
+      • Omaggio         = s7=99 o 100  OPPURE  s4=99 o 100
+    METRICA: % calcolata su Kg (Peso_Netto_TotRiga) — identica al grafico donut.
+    SEZIONE "ANALISI PROMO vs NORMALE":
+      - Tot Kg = chilogrammi totali (Normale + Promo + Omaggio)
+      - Promo Kg = solo righe "In Promozione"
+      - % Promo(Kg) = Promo Kg / Tot Kg × 100
+    Per "chi ha comprato X più in promo?" → leggi CROSS % PROMO per PRODOTTO × CLIENTE,
+      trova prodotto X nell'INDICE, ordina per "% Promo" decrescente.
+    Per "% promo per cliente" → tabella ANALISI PROMO vs NORMALE per CLIENTE, colonna "% Promo(Kg)".
+    I dati AI e il grafico donut usano ESATTAMENTE gli stessi dati e le stesse regole.
 12. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
     dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
 13. NON inventare valori, NON calcolare stime non supportate dai dati.
@@ -810,6 +814,61 @@ def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
 # Mapping colonne per dataset: client → colonne cliente, amount → importo, ecc.
 # Usato da _build_compact_context per creare aggregazioni reali.
 # ---------------------------------------------------------------------------
+# ==========================================================================
+# COSTANTI PROMO — usate dal grafico E dal contesto AI
+# ==========================================================================
+_COL_S7 = 'Sconto7_Promozionali'   # colonna sconto promozionale
+_COL_S4 = 'Sconto4_Free'           # colonna sconto free (omaggio)
+_COL_KG = 'Peso_Netto_TotRiga'     # colonna Kg
+_COL_EU = 'Importo_Netto_TotRiga'  # colonna € netti
+_COL_CT = 'Qta_Cartoni_Ordinato'   # colonna cartoni
+_COL_AT = 'Descr_Articolo'         # colonna articolo
+_COL_CL = 'Decr_Cliente_Fat'       # colonna cliente fatturazione
+_COL_DT = 'Data_Documento'         # colonna data
+
+
+def _classifica_vendita(df: "pd.DataFrame") -> "pd.Series":
+    """
+    Regole ufficiali (applicate identicamente da grafico e AI):
+    - s7=0 E s4=0 (o null/NaN) → 'Vendita Normale'
+    - s7=99 O s7=100 O s4=99 O s4=100 → 'Omaggio'
+    - qualsiasi altro valore >0 in s7 O s4 → 'In Promozione'
+    Ritorna una Series con le stesse categories per ogni riga del df.
+    """
+    s7 = df[_COL_S7].fillna(0) if _COL_S7 in df.columns else pd.Series(0, index=df.index)
+    s4 = df[_COL_S4].fillna(0) if _COL_S4 in df.columns else pd.Series(0, index=df.index)
+    is_omaggio = s7.isin([99, 100]) | s4.isin([99, 100])
+    is_promo   = (~is_omaggio) & ((s7 > 0) | (s4 > 0))
+    tipo = pd.Series('Vendita Normale', index=df.index, dtype='object')
+    tipo[is_promo]   = 'In Promozione'
+    tipo[is_omaggio] = 'Omaggio'
+    return tipo
+
+
+def _filtra_vendite_periodo(df_sales: "pd.DataFrame", g_start, g_end,
+                             entity: str = None) -> "pd.DataFrame":
+    """
+    Filtra df_sales per periodo G_START/G_END e opzionalmente per entity.
+    Aggiunge colonna '__tipo__' con _classifica_vendita().
+    Restituisce il df filtrato pronto per grafico E contesto AI.
+    """
+    df = df_sales.copy()
+    # Filtro data
+    col_dt = next((c for c in [_COL_DT, 'Data', 'Date'] if c in df.columns), None)
+    if col_dt and pd.api.types.is_datetime64_any_dtype(df[col_dt]):
+        df = df[(df[col_dt].dt.date >= g_start) & (df[col_dt].dt.date <= g_end)]
+    # Filtro entity (opzionale)
+    if entity:
+        ent_col = next((c for c in ['Entity', 'Società', 'Company', 'Division', 'Azienda']
+                        if c in df.columns), None)
+        if ent_col:
+            df = df[df[ent_col].astype(str) == entity]
+    # Classificazione
+    df = df.copy()
+    df['__tipo__'] = _classifica_vendita(df)
+    return df
+
+
 _CTX_COL_MAPS = {
     # Dataset Vendite
     "vendite": {
@@ -1118,17 +1177,20 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
 
     # --- Analisi PROMO vs NORMALE (solo se le colonne sconto sono presenti) ---
     # Risponde a: "chi ha comprato X più in promo?" / "% promo per cliente"
-    col_s7 = next((c for c in df.columns if "sconto7" in c.lower() or "promozionali" in c.lower()), None)
-    col_s4 = next((c for c in df.columns if "sconto4" in c.lower() or "free" in c.lower() and "sconto" in c.lower()), None)
-    if col_s7 and col_cliente and val_cols:
+    # Analisi promo: usa le stesse costanti e la stessa funzione del grafico
+    _has_promo_cols = _COL_S7 in df.columns or any("sconto7" in c.lower() for c in df.columns)
+    if _has_promo_cols and col_cliente and val_cols:
         try:
             df_tmp = df.copy()
-            # Identifica righe promo: almeno uno sconto != 0
-            if col_s4 and col_s4 in df_tmp.columns:
-                is_promo = (df_tmp[col_s7].fillna(0) != 0) | (df_tmp[col_s4].fillna(0) != 0)
-            else:
-                is_promo = df_tmp[col_s7].fillna(0) != 0
-            df_tmp["__tipo__"] = is_promo.map({True: "Promo", False: "Normale"})
+            # __tipo__ già presente (df pre-classificato) o va calcolato ora
+            if '__tipo__' not in df_tmp.columns:
+                df_tmp['__tipo__'] = _classifica_vendita(df_tmp)
+            # Mappa per analisi binaria (normale/promo, esclude Omaggio dal % promo)
+            is_promo   = df_tmp['__tipo__'] == 'In Promozione'
+            is_omaggio = df_tmp['__tipo__'] == 'Omaggio'
+            is_normale = df_tmp['__tipo__'] == 'Vendita Normale'
+            col_s7 = _COL_S7
+            col_s4 = _COL_S4
 
             # METRICA UNIFICATA: usa Kg (col_kg) se disponibile, altrimenti €
             # Il grafico donut usa Kg → per coerenza l'AI usa la stessa metrica
@@ -1159,8 +1221,11 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
 
             promo_lines = [f"\nANALISI PROMO vs NORMALE per CLIENTE"]
             promo_lines.append(f"(Sconto7={col_s7}" + (f", Sconto4={col_s4}" if col_s4 else "") + ")")
-            promo_lines.append(f"⚠️ METRICA: % calcolata su {_metric_label} — UGUALE al grafico donut (non su €)")
-            promo_lines.append(f"Regola: Promo = almeno uno sconto != 0 | Normale = tutti sconti a zero")
+            promo_lines.append(f"METRICA: % calcolata su {_metric_label} (= donut)")
+            promo_lines.append(f"REGOLA CLASSIFICAZIONE:")
+            promo_lines.append(f"  Vendita Normale = s7=0 E s4=0 (o vuoti)")
+            promo_lines.append(f"  In Promozione   = s7>0 OPPURE s4>0 (qualsiasi valore, esclusi 99/100)")
+            promo_lines.append(f"  Omaggio         = s7=99 o 100 OPPURE s4=99 o 100")
             promo_lines.append(f"{'Cliente':<40} | {'Tot Kg':>10} | {'Promo Kg':>10} | {'% Promo(Kg)':>12} | {'Tot €':>12} | {'Promo €':>12}")
             promo_lines.append("-" * 105)
             for _, row in combined.iterrows():
@@ -1717,16 +1782,49 @@ else:
     st.sidebar.caption("📜 Scroll attivo — grafici statici")
 st.sidebar.markdown("---")
 
-# AI Assistant
+# ── PRE-CARICAMENTO CONTESTO AI ─────────────────────────────────────────
+# CRITICO: il contesto deve essere aggiornato SUL RENDER CORRENTE,
+# non sul precedente. Carichiamo il file vendite PRIMA di render_ai_assistant.
+# load_dataset e smart_analyze_and_clean sono @st.cache_data → zero overhead.
+files, drive_error = get_drive_files_list()
+if drive_error:
+    st.sidebar.error(f"Errore Drive: {drive_error}")
+
+_df_sales_global = None   # df vendite filtrato+classificato, condiviso da AI e donut
+_periodo_g = f" | Periodo: {G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}"
+
+if files:
+    _sales_key_pre = next(
+        (f for f in files if "from_order_to_invoice" in f.get('name','').lower()), None
+    )
+    if _sales_key_pre:
+        try:
+            _df_raw_pre  = load_dataset(_sales_key_pre['id'], _sales_key_pre['modifiedTime'])
+            if _df_raw_pre is not None:
+                _df_proc_pre = smart_analyze_and_clean(_df_raw_pre, "Sales")
+                if _df_proc_pre is not None:
+                    _df_sales_global = _filtra_vendite_periodo(
+                        _df_proc_pre, G_START, G_END, entity="EITA"
+                    )
+                    if _df_sales_global.empty:
+                        # Fallback: nessun filtro entity
+                        _df_sales_global = _filtra_vendite_periodo(
+                            _df_proc_pre, G_START, G_END, entity=None
+                        )
+        except Exception:
+            _df_sales_global = None
+
+# Aggiorna il contesto AI con i dati corretti DEL RENDER CORRENTE
+if _df_sales_global is not None and not _df_sales_global.empty:
+    st.session_state["ai_context_df"]    = _df_sales_global
+    st.session_state["ai_context_label"] = f"Vendite EITA{_periodo_g}"
+
+# AI Assistant — ora legge il contesto AGGIORNATO
 _ai_ctx_df    = st.session_state.get("ai_context_df",    None)
 _ai_ctx_label = st.session_state.get("ai_context_label", "Dati correnti")
 render_ai_assistant(context_df=_ai_ctx_df, context_label=_ai_ctx_label)
 
 st.sidebar.markdown("---")
-
-files, drive_error = get_drive_files_list()
-if drive_error:
-    st.sidebar.error(f"Errore Drive: {drive_error}")
 
 
 # ==========================================================================
@@ -1845,12 +1943,16 @@ if page == "📊 Vendite & Fatturazione":
 
         st.title(f"Performance Overview: {sel_ent or 'Global'}")
 
-        # Aggiorna contesto AI con i dati filtrati correnti + periodo
+        # Il contesto AI è già aggiornato dal blocco globale con _df_sales_global.
+        # Qui aggiorniamo label e df solo se l'utente ha applicato filtri aggiuntivi
+        # (es. entity diversa da EITA, filtri prodotto/cliente specifici).
         try:
             _periodo_sales = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
         except Exception:
-            _periodo_sales = ""
-        st.session_state["ai_context_df"]    = df_global
+            _periodo_sales = _periodo_g
+        # Solo se df_global è diverso da _df_sales_global (filtri extra applicati)
+        if _df_sales_global is None or sel_ent not in ('EITA', None, ''):
+            st.session_state["ai_context_df"]    = df_global
         st.session_state["ai_context_label"] = f"Vendite {sel_ent or 'Global'}{_periodo_sales}"
 
         if not df_global.empty:
@@ -2281,40 +2383,13 @@ elif page == "🎁 Analisi Customer Promo":
             if f_col in df_pglobal.columns:
                 df_pglobal = df_pglobal[df_pglobal[f_col].astype(str).isin(vals)]
 
-        # Aggiorna contesto AI con i dati vendite (filtrati per periodo promo)
-        # NOTA: usiamo i dati VENDITE (Sconto7/Sconto4) invece di df_pglobal,
-        # perché solo le vendite hanno la logica promo vs normale.
-        # df_pglobal contiene dati forecast che non rispondono alle domande promo.
-        if not df_pglobal.empty:
-            _periodo_promo = ""
-            try:
-                _periodo_promo = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
-            except Exception:
-                pass
-            # Preferisce dati vendite filtrati (più utili per analisi promo AI)
-            if df_sales_for_promo is not None and not df_sales_for_promo.empty:
-                # Filtra df_sales_for_promo per lo stesso periodo
-                _col_ds = next(
-                    (c for c in ['Data_Documento','Data','Date'] if c in df_sales_for_promo.columns), None
-                )
-                _df_ctx = df_sales_for_promo.copy()
-                if _col_ds and pd.api.types.is_datetime64_any_dtype(_df_ctx[_col_ds]):
-                    try:
-                        _df_ctx = _df_ctx[
-                            (_df_ctx[_col_ds].dt.date >= G_START) &
-                            (_df_ctx[_col_ds].dt.date <= G_END)
-                        ]
-                    except Exception:
-                        pass
-                if not _df_ctx.empty:
-                    st.session_state["ai_context_df"]    = _df_ctx
-                    st.session_state["ai_context_label"] = f"Vendite (per Promo){_periodo_promo}"
-                else:
-                    st.session_state["ai_context_df"]    = df_pglobal
-                    st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
-            else:
-                st.session_state["ai_context_df"]    = df_pglobal
-                st.session_state["ai_context_label"] = f"Promozioni{_periodo_promo}"
+        # ── _df_vendite = _df_sales_global (calcolato globalmente prima dell'AI) ──
+        # Stesso df usato dal contesto AI → zero divergenze possibili.
+        # Non serve ricalcolare: G_START/G_END e entity="EITA" sono già applicati.
+        _df_vendite  = _df_sales_global  # alias esplicito per chiarezza nel codice sotto
+        _periodo_promo = _periodo_g
+        # Nota: ai_context_df è già stato impostato nel blocco globale con _df_sales_global.
+        # Non serve aggiornarlo qui (sarebbe già il valore corretto).
 
         if not df_pglobal.empty:
             tot_promo_uniche = (
@@ -2338,157 +2413,103 @@ elif page == "🎁 Analisi Customer Promo":
 
             with col_pl:
                 st.subheader("📊 Vendite: Promo vs Normale")
-                if df_sales_for_promo is not None:
-                    df_s     = df_sales_for_promo.copy()
-                    col_s7   = 'Sconto7_Promozionali'
-                    col_s4   = 'Sconto4_Free'
-                    col_kg_s = 'Peso_Netto_TotRiga'
-                    col_ct_s = 'Qta_Cartoni_Ordinato'
-                    col_art  = 'Descr_Articolo'
-                    col_cli  = 'Decr_Cliente_Fat'
+                # _df_vendite è già filtrato (G_START/G_END, entity EITA) e classificato
+                # con _classifica_vendita() — IDENTICO a quello usato dal contesto AI.
+                if _df_vendite is not None and not _df_vendite.empty:
+                    st.caption(
+                        f"📅 {G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')} "
+                        f"— {len(_df_vendite):,} righe"
+                    )
+                    # ── Filtri opzionali per visualizzazione (non cambiano la fonte dati) ──
+                    with st.form("promo_sales_chart_filter"):
+                        _all_arts  = sorted(_df_vendite[_COL_AT].dropna().astype(str).unique()) if _COL_AT in _df_vendite.columns else []
+                        _all_clis  = sorted(_df_vendite[_COL_CL].dropna().astype(str).unique()) if _COL_CL in _df_vendite.columns else []
+                        _sel_art   = st.multiselect("Filtra Articolo", _all_arts, placeholder="Tutti...")
+                        _sel_cli   = st.multiselect("Filtra Cliente",  _all_clis, placeholder="Tutti...")
+                        _apply_ch  = st.form_submit_button("Aggiorna Grafico")
+                    if _apply_ch:
+                        st.session_state['pchart_art'] = _sel_art
+                        st.session_state['pchart_cli'] = _sel_cli
 
-                    possible_ent = ['Entity', 'Società', 'Company', 'Division', 'Azienda']
-                    col_ent      = next((c for c in possible_ent if c in df_s.columns), None)
+                    df_s = _df_vendite.copy()
+                    _f_art = st.session_state.get('pchart_art', [])
+                    _f_cli = st.session_state.get('pchart_cli', [])
+                    if _f_art and _COL_AT in df_s.columns:
+                        df_s = df_s[df_s[_COL_AT].astype(str).isin(_f_art)]
+                    if _f_cli and _COL_CL in df_s.columns:
+                        df_s = df_s[df_s[_COL_CL].astype(str).isin(_f_cli)]
 
-                    if col_ent and all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
-                        st.caption("Filtra Dati Vendite per Grafico Promo")
-
-                        # ── FILTRO DATA GLOBALE ──────────────────────────────────────
-                        # Usa G_START/G_END (selettore unico in sidebar) → coerente con AI e p.1
-                        _col_data_s = next(
-                            (c for c in ['Data_Documento', 'Data', 'Date'] if c in df_s.columns),
-                            None
-                        )
-                        if _col_data_s and pd.api.types.is_datetime64_any_dtype(df_s[_col_data_s]):
-                            df_s = df_s[
-                                (df_s[_col_data_s].dt.date >= G_START) &
-                                (df_s[_col_data_s].dt.date <= G_END)
-                            ]
-                            st.caption(f"📅 {G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')} — {len(df_s):,} righe vendita")
-                        # ─────────────────────────────────────────────────────────────
-
-                        all_ents       = sorted(df_s[col_ent].dropna().astype(str).unique())
-                        default_ent    = ['EITA'] if 'EITA' in all_ents else []
-                        sel_ent_chart  = st.multiselect(
-                            "1. Filtra Entità (Pre-filtro)", all_ents, default=default_ent,
-                            key="promo_chart_entity_filter_outside"
-                        )
-                        if sel_ent_chart:
-                            df_s = df_s[df_s[col_ent].astype(str).isin(sel_ent_chart)]
-
-                        with st.form("promo_sales_chart_filter"):
-                            all_prods      = sorted(df_s[col_art].dropna().astype(str).unique())
-                            all_custs      = sorted(df_s[col_cli].dropna().astype(str).unique())
-                            sel_prod_chart = st.multiselect("2. Filtra Articolo", all_prods, placeholder="Tutti...")
-                            sel_cust_chart = st.multiselect("3. Filtra Cliente",  all_custs, placeholder="Tutti...")
-                            apply_chart    = st.form_submit_button("Aggiorna Grafico")
-
-                        if apply_chart:
-                            st.session_state['promo_chart_prod'] = sel_prod_chart
-                            st.session_state['promo_chart_cust'] = sel_cust_chart
-
-                        active_prod = st.session_state.get('promo_chart_prod', [])
-                        active_cust = st.session_state.get('promo_chart_cust', [])
-                        if active_prod:
-                            df_s = df_s[df_s[col_art].astype(str).isin(active_prod)]
-                        if active_cust:
-                            df_s = df_s[df_s[col_cli].astype(str).isin(active_cust)]
-
-                        # fillna(0) OBBLIGATORIO: NaN != 0 restituisce True in pandas
-                        # senza fillna, righe con NaN vengono erroneamente classificate come "In Promozione"
-                        df_s['Tipo Vendita'] = np.where(
-                            (df_s[col_s7].fillna(0) != 0) | (df_s[col_s4].fillna(0) != 0),
-                            'In Promozione', 'Vendita Normale'
-                        )
-                        promo_stats = df_s.groupby('Tipo Vendita').agg(
-                            {col_kg_s: 'sum', col_ct_s: 'sum'}
-                        ).reset_index()
-                        total_kg = promo_stats[col_kg_s].sum()
-
-                        if not promo_stats.empty:
-                            # Donut 3D-style: strati multipli per profondità
-                            pcolors = {'In Promozione': '#ff6b9d', 'Vendita Normale': '#43e97b'}
-                            pcolors_dark = {'In Promozione': '#c2185b', 'Vendita Normale': '#1b5e20'}
-                            labels = promo_stats['Tipo Vendita'].tolist()
-                            values = promo_stats[col_kg_s].tolist()
-                            colors      = [pcolors.get(l, '#888') for l in labels]
-                            colors_dark = [pcolors_dark.get(l, '#444') for l in labels]
-                            pull = [0.08 if l == 'In Promozione' else 0 for l in labels]
-
-                            fig_p = go.Figure()
-                            # Layer ombra (offset leggermente per effetto 3D)
-                            fig_p.add_trace(go.Pie(
-                                labels=labels, values=values,
-                                hole=0.41, pull=pull,
-                                marker=dict(colors=colors_dark,
-                                            line=dict(color='rgba(0,0,0,0)', width=0)),
-                                textinfo='none', showlegend=False, hoverinfo='skip',
-                                direction='clockwise', sort=False,
-                            ))
-                            # Layer principale
-                            fig_p.add_trace(go.Pie(
-                                labels=labels, values=values,
-                                hole=0.38, pull=pull,
-                                marker=dict(colors=colors,
-                                            line=dict(color='rgba(255,255,255,0.8)', width=3)),
-                                textinfo='percent',
-                                textposition='inside',
-                                textfont=dict(size=15, color='white', family='Arial Black'),
-                                insidetextorientation='horizontal',
-                                direction='clockwise', sort=False,
-                                hovertemplate="<b>%{label}</b><br>📦 %{value:,.0f} Kg<br>%{percent}<extra></extra>",
-                                showlegend=True,
-                            ))
-                            # Annotazione centro
-                            fig_p.add_annotation(
-                                text=f"<b>{total_kg/1e3:.0f}K Kg</b>",
-                                x=0.5, y=0.5, xref='paper', yref='paper',
-                                showarrow=False,
-                                font=dict(size=14, color='white', family='Arial Black'),
-                            )
-                            fig_p.update_layout(
-                                height=340,
-                                margin=dict(l=10, r=140, t=10, b=10),
-                                showlegend=True,
-                                legend=dict(
-                                    orientation='v', x=1.02, y=0.5, xanchor='left',
-                                    font=dict(size=11),
-                                ),
-                                paper_bgcolor='rgba(0,0,0,0)',
-                            )
-                            _plot(fig_p)
-
-                            st.caption("ℹ️ % calcolata su Kg — coerente con AI Data Assistant")
-                        st.markdown("#### 📉 Dettaglio Metriche")
-                        p_row = promo_stats[promo_stats['Tipo Vendita'] == 'In Promozione']
-                        n_row = promo_stats[promo_stats['Tipo Vendita'] == 'Vendita Normale']
-                        if not p_row.empty:
-                            p_kg = p_row[col_kg_s].values[0]
-                            p_ct = p_row[col_ct_s].values[0]
-                            n_kg = n_row[col_kg_s].values[0] if not n_row.empty else 0
-                            p_share = (p_kg / total_kg * 100) if total_kg > 0 else 0
-                            # Aggiungi anche € se disponibile
-                            col_imp_s = 'Importo_Netto_TotRiga'
-                            m1, m2, m3 = st.columns(3)
-                            m1.metric("% Promo (su Kg)", f"{p_share:.1f}%")
-                            m2.metric("Kg Promo", f"{p_kg:,.0f}")
-                            m3.metric("Kg Normale", f"{n_kg:,.0f}")
-                            if col_imp_s in df_s.columns:
-                                promo_mask = df_s['Tipo Vendita'] == 'In Promozione'
-                                eur_promo  = df_s[promo_mask][col_imp_s].sum()
-                                eur_norm   = df_s[~promo_mask][col_imp_s].sum()
-                                eur_tot    = eur_promo + eur_norm
-                                p_share_eur = (eur_promo / eur_tot * 100) if eur_tot > 0 else 0
-                                e1, e2, e3 = st.columns(3)
-                                e1.metric("% Promo (su €)", f"{p_share_eur:.1f}%")
-                                e2.metric("€ Promo", f"{eur_promo:,.0f}")
-                                e3.metric("€ Normale", f"{eur_norm:,.0f}")
-                        else:
-                            st.info("Nessuna vendita in promozione trovata con i filtri correnti.")
+                    # ── Aggregazione Kg per tipo (__tipo__ già calcolato con regole ufficiali) ──
+                    if _COL_KG not in df_s.columns:
+                        st.warning(f"Colonna {_COL_KG} non trovata.")
                     else:
-                        st.error(f"Colonne mancanti. Colonna Entità rilevata: {col_ent or 'NON TROVATA'}")
+                        promo_stats = df_s.groupby('__tipo__')[_COL_KG].sum().reset_index()
+                        promo_stats.columns = ['Tipo', 'Kg']
+                        total_kg = promo_stats['Kg'].sum()
+
+                        # Colori per categoria
+                        _pcolors = {
+                            'In Promozione':  '#ff6b9d',
+                            'Vendita Normale':'#43e97b',
+                            'Omaggio':        '#f5a623',
+                        }
+                        _pcolors_dark = {
+                            'In Promozione':  '#c2185b',
+                            'Vendita Normale':'#1b5e20',
+                            'Omaggio':        '#b8741a',
+                        }
+                        labels = promo_stats['Tipo'].tolist()
+                        values = promo_stats['Kg'].tolist()
+                        colors      = [_pcolors.get(l, '#888')      for l in labels]
+                        colors_dark = [_pcolors_dark.get(l, '#444') for l in labels]
+                        pull = [0.08 if l == 'In Promozione' else 0 for l in labels]
+
+                        fig_p = go.Figure()
+                        fig_p.add_trace(go.Pie(
+                            labels=labels, values=values, hole=0.41, pull=pull,
+                            marker=dict(colors=colors_dark, line=dict(color='rgba(0,0,0,0)', width=0)),
+                            textinfo='none', showlegend=False, hoverinfo='skip',
+                            direction='clockwise', sort=False,
+                        ))
+                        fig_p.add_trace(go.Pie(
+                            labels=labels, values=values, hole=0.38, pull=pull,
+                            marker=dict(colors=colors, line=dict(color='rgba(255,255,255,0.8)', width=3)),
+                            textinfo='percent', textposition='inside',
+                            textfont=dict(size=15, color='white', family='Arial Black'),
+                            insidetextorientation='horizontal',
+                            direction='clockwise', sort=False,
+                            hovertemplate="<b>%{label}</b><br>📦 %{value:,.0f} Kg<br>%{percent}<extra></extra>",
+                            showlegend=True,
+                        ))
+                        fig_p.add_annotation(
+                            text=f"<b>{total_kg/1e3:.0f}K Kg</b>",
+                            x=0.5, y=0.5, xref='paper', yref='paper', showarrow=False,
+                            font=dict(size=14, color='white', family='Arial Black'),
+                        )
+                        fig_p.update_layout(
+                            height=340, margin=dict(l=10, r=140, t=10, b=10),
+                            showlegend=True,
+                            legend=dict(orientation='v', x=1.02, y=0.5, xanchor='left', font=dict(size=11)),
+                            paper_bgcolor='rgba(0,0,0,0)',
+                        )
+                        _plot(fig_p)
+
+                        # ── Dettaglio Metriche ───────────────────────────────────
+                        st.markdown("#### 📉 Dettaglio Metriche")
+                        st.caption("ℹ️ % su Kg — stessa logica del contesto AI | Regola: Normale=s7=0 e s4=0, Promo=qualsiasi>0, Omaggio=99/100")
+                        for tipo in ['In Promozione', 'Vendita Normale', 'Omaggio']:
+                            row = promo_stats[promo_stats['Tipo'] == tipo]
+                            if row.empty:
+                                continue
+                            kg_val   = row['Kg'].values[0]
+                            pct      = (kg_val / total_kg * 100) if total_kg > 0 else 0
+                            eur_val  = df_s[df_s['__tipo__'] == tipo][_COL_EU].sum() if _COL_EU in df_s.columns else 0
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric(f"{tipo} %",   f"{pct:.1f}%")
+                            c2.metric(f"Kg",          f"{kg_val:,.0f}")
+                            c3.metric(f"€",           f"{eur_val:,.0f}")
                 else:
-                    st.warning("File Vendite non trovato per l'analisi incrociata.")
+                    st.info("File Vendite non trovato o nessun dato nel periodo selezionato.")
 
             with col_pr:
                 st.subheader("Top Promozioni (Forecast vs Actual)")
