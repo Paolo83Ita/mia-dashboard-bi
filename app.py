@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v63.0 - Ottimizzazioni codice, Menu sotto titolo, chip emoji, fix CROSS promo token limit)
+# 1. CONFIGURAZIONE & STILE (v64.0 - Fix NaN bug donut promo, cache context builder, fallback AI più veloce)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v63.0",
+    page_title="EITA Analytics Pro v64.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -940,6 +940,7 @@ def _monthly_trend(df: pd.DataFrame, date_col: str, value_cols: list) -> str:
         return f"[Errore trend: {e}]"
 
 
+@st.cache_data(show_spinner=False, ttl=120)
 def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
     """
     Contesto INTELLIGENTE con aggregazioni reali per rispondere a domande come:
@@ -1222,7 +1223,7 @@ def _transcribe_audio_groq(client, audio_bytes: bytes) -> str:
 
 def _call_groq(client, model_name: str, history: list,
                prompt: str, audio_bytes: bytes = None,
-               max_retries: int = 2):
+               max_retries: int = 1):
     """Chiama Groq con retry. Prova prima 70B poi 8B su rate limit."""
     final_prompt = prompt
     if audio_bytes:
@@ -1261,10 +1262,10 @@ def _call_groq(client, model_name: str, history: list,
                 if idx + 1 < len(models_to_try):
                     current_model = models_to_try[idx + 1]
                 if is_rate:
-                    wait_s = 15
+                    wait_s = 3   # ridotto da 15s per fallback più rapido
                     m_wait = re.search(r"retry in (\d+)", err_str)
                     if m_wait:
-                        wait_s = min(int(m_wait.group(1)), 45)
+                        wait_s = min(int(m_wait.group(1)), 20)
                     time.sleep(wait_s)
                 continue
             return None, 0, 0, err_str, current_model
@@ -2323,8 +2324,10 @@ elif page == "🎁 Analisi Customer Promo":
                         if active_cust:
                             df_s = df_s[df_s[col_cli].astype(str).isin(active_cust)]
 
+                        # fillna(0) OBBLIGATORIO: NaN != 0 restituisce True in pandas
+                        # senza fillna, righe con NaN vengono erroneamente classificate come "In Promozione"
                         df_s['Tipo Vendita'] = np.where(
-                            (df_s[col_s7] != 0) | (df_s[col_s4] != 0),
+                            (df_s[col_s7].fillna(0) != 0) | (df_s[col_s4].fillna(0) != 0),
                             'In Promozione', 'Vendita Normale'
                         )
                         promo_stats = df_s.groupby('Tipo Vendita').agg(
