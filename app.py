@@ -15,11 +15,11 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v62.0 - Analisi promo vs normale nel contesto, copia expander nativa sempre visibile)
+# 1. CONFIGURAZIONE & STILE (v63.0 - Ottimizzazioni codice, Menu sotto titolo, chip emoji, fix CROSS promo token limit)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v62.0",
-    page_icon="🚀",
+    page_title="EITA Analytics Pro v63.0",
+    page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -1022,13 +1022,15 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
         if len("\n".join(parts)) > 3500:
             break  # limite token
 
-    # --- Indice completo prodotti (per fuzzy matching AI) ---
-    # ESSENZIALE: l'AI può fare fuzzy match su "selection" → "SELECTION XXX YYY"
+    # --- Indice prodotti compatto (fuzzy match AI: "selection"→nome esatto) ---
     if col_prodotto:
         try:
             all_prods = sorted(df[col_prodotto].dropna().astype(str).unique().tolist())
-            parts.append(f"\nELENCO COMPLETO PRODOTTI ({len(all_prods)} totali):")
-            parts.append(", ".join(all_prods))
+            # Formato: una riga per prodotto (più leggibile dell'AI, meno token del CSV)
+            prod_idx = ["\nINDICE PRODOTTI (usa per fuzzy match su nome parziale):"]
+            for p in all_prods:
+                prod_idx.append(f"  • {p}")
+            parts.append("\n".join(prod_idx))
         except Exception:
             pass
 
@@ -1066,7 +1068,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                     _, last_row = list(cli_agg.tail(1).iterrows())[0]
                     vals = " | ".join(f"{_fmt_num(last_row[c])}" for c in val_cols if c in last_row.index)
                     cross_lines.append(f"    MINIMO: {str(last_row[col_cliente])[:40]}: {vals}")
-                if len("\n".join(parts) + "\n".join(cross_lines)) > 6000:
+                if len("\n".join(parts) + "\n".join(cross_lines)) > 20000:
                     cross_lines.append("  [... altri prodotti omessi per limite token]")
                     break
             if len(cross_lines) > 2:
@@ -1100,7 +1102,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                     for _, row in prod_agg.tail(3).iterrows():
                         vals = " | ".join(f"{_fmt_num(row[c])}" for c in val_cols if c in row.index)
                         cross2_lines.append(f"      ↓ {str(row[col_prodotto])[:40]}: {vals}")
-                if len("\n".join(parts) + "\n".join(cross2_lines)) > 8000:
+                if len("\n".join(parts) + "\n".join(cross2_lines)) > 22000:
                     break
             if len(cross2_lines) > 2:
                 parts.append("\n".join(cross2_lines))
@@ -1175,7 +1177,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
             if col_prodotto:
                 promo_lines.append("\nCROSS: % PROMO per PRODOTTO × CLIENTE (risponde a 'chi ha comprato X più in promo?'):")
                 top_p_list = (df_tmp.groupby(col_prodotto, observed=True)[val_cols[0]]
-                               .sum().sort_values(ascending=False).head(15).index.tolist())
+                               .sum().sort_values(ascending=False).head(40).index.tolist())
                 for prod in top_p_list:
                     df_p = df_tmp[df_tmp[col_prodotto] == prod]
                     is_p_promo = df_p["__tipo__"] == "Promo"
@@ -1190,10 +1192,9 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                     promo_lines.append(f"\n  {prod}:")
                     for _, row in cli_df.iterrows():
                         promo_lines.append(
-                            f"    {str(row[col_cliente])[:40]}: {_fmt_num(row['Totale'])} totale | "
-                            f"{_fmt_num(row['Promo'])} promo | {row['% Promo']:.1f}% promo"
+                            f"    {str(row[col_cliente])[:38]}: tot={_fmt_num(row['Totale'])} promo={_fmt_num(row['Promo'])} ({row['% Promo']:.1f}%)"
                         )
-                    if len("\n".join(promo_lines)) > 6000:
+                    if len("\n".join(promo_lines)) > 25000:
                         promo_lines.append("  [...omesso per limite token]")
                         break
 
@@ -1646,7 +1647,15 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
 # ==========================================================================
 # 5. NAVIGAZIONE
 # ==========================================================================
-st.sidebar.title("🚀 EITA Dashboard")
+st.sidebar.title("🖥️ EITA Dashboard")
+
+# Menu subito sotto il titolo
+st.sidebar.markdown("**Menu:**")
+page = st.sidebar.radio(
+    "",
+    ["📊 Vendite & Fatturazione", "🎁 Analisi Customer Promo", "📦 Analisi Acquisti"],
+    label_visibility="collapsed"
+)
 st.sidebar.markdown("---")
 
 # Toggle zoom grafici
@@ -1666,19 +1675,11 @@ else:
     st.sidebar.caption("📜 Scroll attivo — grafici statici")
 st.sidebar.markdown("---")
 
-# AI Assistant sempre visibile in cima (prima della navigazione pagine)
-# Il contesto dati viene aggiornato dalle singole pagine via session_state
+# AI Assistant
 _ai_ctx_df    = st.session_state.get("ai_context_df",    None)
 _ai_ctx_label = st.session_state.get("ai_context_label", "Dati correnti")
 render_ai_assistant(context_df=_ai_ctx_df, context_label=_ai_ctx_label)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Menu:**")
-page = st.sidebar.radio(
-    "",
-    ["📊 Vendite & Fatturazione", "🎁 Analisi Customer Promo", "📦 Analisi Acquisti"],
-    label_visibility="collapsed"
-)
 st.sidebar.markdown("---")
 
 files, drive_error = get_drive_files_list()
