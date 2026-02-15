@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v66.0 - Unifica metrica AI e donut su Kg, donut mostra anche €, elimina discrepanza definitiva)
+# 1. CONFIGURAZIONE & STILE (v67.0 - Filtro data globale unico per tutte le pagine, fine discrepanze di periodo)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v66.0",
+    page_title="EITA Analytics Pro v67.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1676,6 +1676,30 @@ page = st.sidebar.radio(
 )
 st.sidebar.markdown("---")
 
+# ── SELETTORE DATA GLOBALE ───────────────────────────────────────────────
+# Unico filtro periodo per TUTTE e 3 le pagine.
+# I dati di ogni pagina vengono filtrati automaticamente su questo range.
+st.sidebar.markdown("**📅 Periodo Analisi:**")
+_g_prev = st.session_state.get("global_date_range", None)
+_g_def_s = _g_prev[0] if _g_prev else datetime.date(2026, 1, 1)
+_g_def_e = _g_prev[1] if _g_prev else datetime.date(2026, 1, 31)
+_g_result = st.sidebar.date_input(
+    "Periodo",
+    value=[_g_def_s, _g_def_e],
+    key="global_date_input",
+    label_visibility="collapsed",
+    format="DD/MM/YYYY",
+)
+if isinstance(_g_result, (list, tuple)) and len(_g_result) == 2:
+    G_START, G_END = _g_result[0], _g_result[1]
+elif isinstance(_g_result, datetime.date):
+    G_START = G_END = _g_result
+else:
+    G_START, G_END = _g_def_s, _g_def_e
+st.session_state["global_date_range"] = [G_START, G_END]
+st.sidebar.caption(f"📆 {G_START.strftime('%d/%m/%Y')} — {G_END.strftime('%d/%m/%Y')}")
+st.sidebar.markdown("---")
+
 # Toggle zoom grafici
 if "chart_zoom_enabled" not in st.session_state:
     st.session_state["chart_zoom_enabled"] = False
@@ -1751,11 +1775,8 @@ if page == "📊 Vendite & Fatturazione":
             df_global = df_global[df_global[col_entity].astype(str) == sel_ent]
 
         if col_data and pd.api.types.is_datetime64_any_dtype(df_global[col_data]):
-            d_start, d_end = safe_date_input(
-                "Periodo di Analisi",
-                datetime.date(2026, 1, 1), datetime.date(2026, 1, 31),
-                key="sales_date"
-            )
+            # Usa il selettore data GLOBALE dalla sidebar (G_START / G_END)
+            d_start, d_end = G_START, G_END
             df_global = df_global[
                 (df_global[col_data].dt.date >= d_start) &
                 (df_global[col_data].dt.date <= d_end)
@@ -2184,17 +2205,13 @@ elif page == "🎁 Analisi Customer Promo":
             sel_div = st.sidebar.selectbox("Division", divs, index=idx_div)
             df_pglobal = df_pglobal[df_pglobal[p_div] == sel_div]
 
-        # Filtro data Sell-In
+        # Filtro data Sell-In — usa il selettore data GLOBALE (G_START / G_END)
         if p_start in df_pglobal.columns and pd.api.types.is_datetime64_any_dtype(df_pglobal[p_start]):
-            min_date, max_date = df_pglobal[p_start].min(), df_pglobal[p_start].max()
-            if pd.notnull(min_date) and pd.notnull(max_date):
-                d_start, d_end = safe_date_input(
-                    "Periodo Sell-In", min_date.date(), max_date.date(), key="promo_date"
-                )
-                df_pglobal = df_pglobal[
-                    (df_pglobal[p_start].dt.date >= d_start) &
-                    (df_pglobal[p_start].dt.date <= d_end)
-                ]
+            d_start, d_end = G_START, G_END
+            df_pglobal = df_pglobal[
+                (df_pglobal[p_start].dt.date >= d_start) &
+                (df_pglobal[p_start].dt.date <= d_end)
+            ]
 
         # FIX: filtri avanzati gated da Submit (stessa logica di Sales page).
         # Problema originale: active_filters_p e sel_stati venivano applicati
@@ -2284,8 +2301,8 @@ elif page == "🎁 Analisi Customer Promo":
                 if _col_ds and pd.api.types.is_datetime64_any_dtype(_df_ctx[_col_ds]):
                     try:
                         _df_ctx = _df_ctx[
-                            (_df_ctx[_col_ds].dt.date >= d_start) &
-                            (_df_ctx[_col_ds].dt.date <= d_end)
+                            (_df_ctx[_col_ds].dt.date >= G_START) &
+                            (_df_ctx[_col_ds].dt.date <= G_END)
                         ]
                     except Exception:
                         pass
@@ -2336,31 +2353,18 @@ elif page == "🎁 Analisi Customer Promo":
                     if col_ent and all(c in df_s.columns for c in [col_s7, col_s4, col_kg_s, col_ct_s]):
                         st.caption("Filtra Dati Vendite per Grafico Promo")
 
-                        # ── FILTRO DATA ───────────────────────────────────────────────
-                        # CAUSA DISCREPANZA: df_sales_for_promo è caricato senza filtro
-                        # → contiene tutto lo storico. Il filtro data lo allinea al contesto AI.
+                        # ── FILTRO DATA GLOBALE ──────────────────────────────────────
+                        # Usa G_START/G_END (selettore unico in sidebar) → coerente con AI e p.1
                         _col_data_s = next(
                             (c for c in ['Data_Documento', 'Data', 'Date'] if c in df_s.columns),
                             None
                         )
                         if _col_data_s and pd.api.types.is_datetime64_any_dtype(df_s[_col_data_s]):
-                            _min_ds = df_s[_col_data_s].min().date()
-                            _max_ds = df_s[_col_data_s].max().date()
-                            # Default: usa lo stesso range del filtro promo (d_start/d_end)
-                            try:
-                                _def_start_s = d_start if d_start >= _min_ds else _min_ds
-                                _def_end_s   = d_end   if d_end   <= _max_ds else _max_ds
-                            except Exception:
-                                _def_start_s, _def_end_s = _min_ds, _max_ds
-                            _ds, _de = safe_date_input(
-                                "0. Periodo Vendite", _def_start_s, _def_end_s,
-                                key="promo_sales_date_filter"
-                            )
                             df_s = df_s[
-                                (df_s[_col_data_s].dt.date >= _ds) &
-                                (df_s[_col_data_s].dt.date <= _de)
+                                (df_s[_col_data_s].dt.date >= G_START) &
+                                (df_s[_col_data_s].dt.date <= G_END)
                             ]
-                            st.caption(f"📅 Periodo vendite: {_ds.strftime('%d/%m/%Y')} – {_de.strftime('%d/%m/%Y')} ({len(df_s):,} righe)")
+                            st.caption(f"📅 {G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')} — {len(df_s):,} righe vendita")
                         # ─────────────────────────────────────────────────────────────
 
                         all_ents       = sorted(df_s[col_ent].dropna().astype(str).unique())
@@ -2729,9 +2733,8 @@ elif page == "📦 Analisi Acquisti":
                     def_end     = datetime.date.fromisoformat(saved_end)   if saved_end   else _max_d.date()
                     def_start   = max(def_start, _min_d.date())
                     def_end     = min(def_end,   _max_d.date())
-                    d_start_pu, d_end_pu = safe_date_input(
-                        "Periodo di Analisi", def_start, def_end, key="purch_date"
-                    )
+                    # Usa il selettore data GLOBALE (G_START / G_END)
+                    d_start_pu, d_end_pu = G_START, G_END
                     df_pu_global = df_pu_global[
                         (df_pu_global[pu_date].dt.date >= d_start_pu) &
                         (df_pu_global[pu_date].dt.date <= d_end_pu)
