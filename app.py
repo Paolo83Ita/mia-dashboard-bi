@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v76.0 - Fix Page3: black page (periodo vuoto), OOM (rimossi .copy() inutili, cap tabella 5k righe), filtri colonna lightweight: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v77.0 - Fix: trace "trace 2" in legend, guard df.empty in agg/trend, overflow-x mobile, .copy() rimosso in _monthly_trend: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v76.0",
+    page_title="EITA Analytics Pro v77.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -27,6 +27,7 @@ st.set_page_config(
 st.markdown("""
 <style>
   /* ---- LAYOUT ---- */
+  body, html { overflow-x: hidden; }   /* previene scroll orizzontale su mobile */
   .block-container {
     padding-top:1.8rem !important; padding-bottom:3rem !important;
     padding-left:1.5rem !important; padding-right:1.5rem !important;
@@ -1067,6 +1068,8 @@ def _agg_table(df: pd.DataFrame, group_col: str, value_cols: list,
     Crea una tabella aggregata (group_col × SUM di value_cols).
     Ritorna stringa Markdown pronta per il context AI.
     """
+    if df is None or df.empty:
+        return ""
     present = [c for c in value_cols if c in df.columns]
     if not present or group_col not in df.columns:
         return ""
@@ -1093,12 +1096,13 @@ def _agg_table(df: pd.DataFrame, group_col: str, value_cols: list,
 
 def _monthly_trend(df: pd.DataFrame, date_col: str, value_cols: list) -> str:
     """Crea trend mensile aggregato (ultimi 24 mesi)."""
+    if df is None or df.empty:
+        return ""
     present = [c for c in value_cols if c in df.columns]
     if not present or date_col not in df.columns:
         return ""
     try:
-        tmp = df.copy()
-        tmp["__mese__"] = pd.to_datetime(tmp[date_col], errors="coerce").dt.to_period("M")
+        tmp = df.assign(__mese__=pd.to_datetime(df[date_col], errors="coerce").dt.to_period("M"))
         tmp = tmp.dropna(subset=["__mese__"])
         agg = (tmp.groupby("__mese__", observed=True)[present]
                   .sum(numeric_only=True)
@@ -3067,9 +3071,10 @@ elif page == "📦 Analisi Acquisti":
                             f"al **{_max_d.strftime('%d/%m/%Y')}**.\n\n"
                             f"Modifica il periodo nella sidebar per visualizzare i dati acquisti."
                         )
-                        # Usa lo storico completo della divisione selezionata per mostrare qualcosa
+                        # Usa lo storico completo della divisione selezionata
+                        # Aggiorna d_start/end al range reale dei dati (non G_START/G_END vuoto)
                         d_start_pu, d_end_pu = _min_d.date(), _max_d.date()
-                        df_pu_global = df_pu_global  # non filtrare — mostra tutto
+                        # df_pu_global rimane invariato (storico completo)
                     else:
                         df_pu_global = df_filtered_period
 
@@ -3212,6 +3217,8 @@ elif page == "📦 Analisi Acquisti":
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             mode='lines+markers+text',
+                            name='💸 Spesa €',
+                            showlegend=True,
                             line=dict(color='#38f9d7', width=2, shape='spline', smoothing=1.1),
                             marker=dict(
                                 size=10, color='#43e97b',
