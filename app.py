@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v69.1 - Fix bug CROSS tipo==Promo→tipo==In Promozione, render lag: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v70.0 - Tabella top10+prodotto pre-calcolata, regole AI anti-invenzione: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v69.0",
+    page_title="EITA Analytics Pro v70.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -601,8 +601,10 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 - TOP 15 per CLIENTE: fatturato e kg esatti per cliente, ordine decrescente
 - TOP 15 per PRODOTTO: fatturato e kg esatti per prodotto
 - TOP 15 per FORNITORE: spesa e kg esatti per fornitore (pagina Acquisti)
+- TOP 10 CLIENTI + PRODOTTO PRINCIPALE: tabella pronta con rank, cliente, fatturato €,
+  prodotto che hanno acquistato di più e fatturato del prodotto principale (→ usa per "top N clienti")
 - TOP CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti che lo hanno comprato di più
-- TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati
+- TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati (top 8 clienti)
 - TREND MENSILE: aggregazione mensile esatta (ultimi 24 mesi)
 - Colonne: Importo_Netto_TotRiga=€ vendite, Peso_Netto_TotRiga=Kg venduti,
            Invoice amount=€ acquisti fornitore, Kg acquistati=Kg ricevuti
@@ -626,7 +628,11 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 4. NON RIPETERE MAI lo stesso paragrafo o la stessa frase più di una volta nella risposta.
    Scrivi ogni concetto UNA SOLA VOLTA. Concludi la risposta dopo l'ultima informazione utile.
 
-5. Per "top N clienti/prodotti/fornitori" → leggi la tabella TOP 15 corrispondente.
+5. Per "top N clienti" o "i migliori clienti" → leggi la tabella
+   "TOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE" e riportala verbatim.
+   Quella tabella contiene già: rank, cliente, fatturato totale, prodotto principale,
+   fatturato del prodotto principale. NON sintetizzare da altre sezioni.
+   Per "top N prodotti/fornitori" → leggi la tabella TOP 15 corrispondente.
 6. RICERCA PRODOTTI: usa l'ELENCO COMPLETO PRODOTTI per trovare il nome esatto.
    Se l'utente scrive "selection" cerca nell'elenco il prodotto che contiene "SELECTION".
    Poi cerca quel prodotto esatto nella sezione TOP E BOTTOM.
@@ -654,6 +660,11 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 12. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
     dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
 13. NON inventare valori, NON calcolare stime non supportate dai dati.
+14. NON creare tabelle Markdown con colonne inventate o non presenti nel contesto.
+    Se costruisci una tabella, ogni colonna deve essere una colonna che leggi nel contesto.
+    I valori devono essere COPIATI verbatim dal contesto, non calcolati né interpolati.
+15. Se un dato richiesto non è nella tabella pre-calcolata → dì "Dato non disponibile"
+    e suggerisci di usare i filtri della dashboard per ottenere il dettaglio.
 """
 
 # ---------------------------------------------------------------------------
@@ -1170,6 +1181,37 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                 parts.append("\n".join(cross2_lines))
         except Exception as e:
             parts.append(f"[Cross-agg2 error: {e}]")
+
+    # --- TABELLA PRONTA: Top 10 clienti + prodotto principale + fatturato ---
+    # Pre-calcolata per rispondere ESATTAMENTE a "top N clienti con prodotto principale"
+    # L'AI legge questa tabella direttamente senza sintetizzare da sezioni diverse.
+    if col_cliente and col_prodotto and val_cols:
+        try:
+            cli_tot = (df.groupby(col_cliente, observed=True)[val_cols[0]]
+                        .sum().sort_values(ascending=False).head(10))
+            top10_lines = [
+                f"\nTOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE:",
+                f"(usa questa tabella per 'top N clienti' — dati PRE-CALCOLATI, leggili verbatim)",
+                f"{'#':<3} | {'Cliente':<40} | {'Fatturato €':>14} | {'Prodotto Principale':<40} | {'Fat. Prod. Princ. €':>19}",
+                "-" * 130,
+            ]
+            for rank, (cli, fat_tot) in enumerate(cli_tot.items(), 1):
+                df_cli = df[df[col_cliente] == cli]
+                prod_agg = (df_cli.groupby(col_prodotto, observed=True)[val_cols[0]]
+                                  .sum().sort_values(ascending=False))
+                if prod_agg.empty:
+                    top_prod, fat_prod = "-", 0.0
+                else:
+                    top_prod = prod_agg.index[0]
+                    fat_prod = prod_agg.values[0]
+                cli_str  = str(cli)[:39]
+                prod_str = str(top_prod)[:39]
+                top10_lines.append(
+                    f"{rank:<3} | {cli_str:<40} | {_fmt_num(fat_tot):>14} | {prod_str:<40} | {_fmt_num(fat_prod):>19}"
+                )
+            parts.append("\n".join(top10_lines))
+        except Exception as e:
+            parts.append(f"[Top10 error: {e}]")
 
     # --- Trend mensile ---
     if col_data and val_cols:
