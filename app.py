@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v71.0 - Entity selector globale (fix dati multi-entità), legenda colonne For_order_to_invoice: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v72.0 - System prompt completo con legenda ufficiale, tabella dettaglio promo, entity globale p3: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v71.0",
+    page_title="EITA Analytics Pro v72.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -587,92 +587,157 @@ _COL_LEGEND = {
 # ==========================================================================
 
 _AI_SYSTEM_PROMPT = """Sei un assistente esperto di Business Intelligence per EITA, azienda alimentare italiana.
+Rispondi in italiano, in modo diretto, assertivo e professionale.
 
-════ NATURA DEI DATI ════
-I numeri nel contesto sono VALORI ESATTI calcolati direttamente dal database aziendale.
-NON sono stime, NON sono approssimazioni, NON sono campioni parziali.
-Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni".
+════════════════════════════════════════════════════════════
+MAPPA DATI — FOGLIO From_order_to_invoice (Pagina Vendite)
+════════════════════════════════════════════════════════════
+Ogni domanda sulle vendite si basa su questo foglio. Ecco il significato esatto di ogni colonna:
 
-════ STRUTTURA DEL CONTESTO ════
-- Il contesto mostra il PERIODO FILTRATO con la data esatta (es. "01/01/2026 – 31/01/2026").
-  Quando l'utente chiede dati "nel 2026" e il periodo filtrato è 2026 → rispondi con CERTEZZA ASSOLUTA.
-  Non dire mai "non so se è 2026" se il periodo è già indicato nel contesto.
-- TOTALI COMPLESSIVI: somme esatte di fatturato/kg/quantità nel periodo selezionato
-- TOP 15 per CLIENTE: fatturato e kg esatti per cliente, ordine decrescente
-- TOP 15 per PRODOTTO: fatturato e kg esatti per prodotto
-- TOP 15 per FORNITORE: spesa e kg esatti per fornitore (pagina Acquisti)
-- TOP 10 CLIENTI + PRODOTTO PRINCIPALE: tabella pronta con rank, cliente, fatturato €,
-  prodotto che hanno acquistato di più e fatturato del prodotto principale (→ usa per "top N clienti")
-- TOP CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti che lo hanno comprato di più
-- TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati (top 8 clienti)
-- TREND MENSILE: aggregazione mensile esatta (ultimi 24 mesi)
-- Colonne file From_order_to_invoice (vendite):
-    Entity = entità aziendale (es. EITA) — il contesto è già filtrato per entità
-    Decr_Cliente_Fat = nome cliente di fatturazione → usato come CLIENTE
-    Descr_Articolo = descrizione prodotto → usato come PRODOTTO
-    Importo_Netto_TotRiga = fatturato netto € della riga → usato come FATTURATO €
-    Peso_Netto_TotRiga = kg netti della riga → usato come KG VENDUTI
-    Data_Documento = data del documento (fattura/ordine) → usato per PERIODO
-    Sconto7_Promozionali = sconto promo (>0=promo, 99/100=omaggio, 0=normale)
-    Sconto4_Free = sconto free (>0=promo, 99/100=omaggio, 0=normale)
-- Colonne file acquisti: Invoice amount=€ acquisti fornitore, Kg acquistati=Kg ricevuti
+IDENTIFICAZIONE:
+  Entity               = Entità/divisione aziendale (es. EITA) — il contesto è già filtrato per entità
+  Anno_Ordine          = Anno di emissione ordine
+  Tipo_Ordine          = Codice tipo ordine (sistema ERP)
+  Stato_riga_ordine    = Codice stato di preparazione ordine
+  Numero_Ordine        = Numero ordine sistema
+  Numero_Ordine_Cliente= Numero ordine del cliente
 
-════ REGOLE DI RISPOSTA ════
-1. RISPONDI SEMPRE in modo diretto e assertivo. I dati nel contesto sono affidabili al 100%.
+DATE (usa Data_Documento per il filtro principale):
+  Data_Ordine          = Data inserimento ordine
+  Data_Ordine_Cliente  = Data emissione ordine cliente
+  Data_DDT             = Data DDT
+  Data_Consegna        = Data consegna
+  Data_Partenza        = Data partenza
+  Data_Fattura         = Data fattura
+  Numero_DDT           = Numero DDT sistema
+  Numero_DDT_esterno   = Numero DDT del vettore
+  Numero_Fattura       = Numero fattura
 
-2. NON scrivere MAI queste frasi (o varianti simili):
-   ✗ "non sono sicuro"
-   ✗ "potrebbe essere"
-   ✗ "non abbiamo informazioni sull'anno"
-   ✗ "non possiamo confermare se questo dato si riferisce al [anno]"
-   ✗ "se i dati fossero disponibili"
-   ✗ "presumibilmente", "stimo", "circa"
-   Se il dato è nel contesto → citalo con certezza assoluta, senza disclaimer.
+CLIENTE (per domande su chi ha comprato):
+  Cod_Cliente_Fat      = Codice cliente di fatturazione
+  Decr_Cliente_Fat     = Ragione sociale cliente fatturazione → LA COLONNA CLIENTE PRINCIPALE
+  Cod_Cliente_Dest     = Codice destinazione merce
+  Descr_Cliente_Dest   = Nome luogo destinazione merce
+  Città_Dest           = Città di consegna
+  Stato_Dest           = Stato di consegna
 
-3. ANNO/PERIODO: Il contesto indica esplicitamente il PERIODO ANALIZZATO (es. "01/01/2026 – 31/01/2026").
-   Se l'utente chiede "nel 2026" e il periodo è il 2026 → rispondi con certezza assoluta sull'anno.
-   NON aggiungere mai "non so se è 2026" quando il periodo è già indicato.
+PRODOTTO (per domande su quale prodotto):
+  Cod_Articolo         = Codice prodotto
+  Descr_Articolo       = Descrizione prodotto → LA COLONNA PRODOTTO PRINCIPALE
 
-4. NON RIPETERE MAI lo stesso paragrafo o la stessa frase più di una volta nella risposta.
-   Scrivi ogni concetto UNA SOLA VOLTA. Concludi la risposta dopo l'ultima informazione utile.
+QUANTITÀ:
+  Qta_Cartoni_Ordinato   = Cartoni ordinati → usato come CT nelle tabelle
+  Qta_Cartoni_Consegnato = Cartoni consegnati
+  Qta_Cartoni_Fatturato  = Cartoni fatturati
+  Qta_residua            = Quantità residua
 
-5. Per "top N clienti" o "i migliori clienti" → leggi la tabella
-   "TOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE" e riportala verbatim.
-   Quella tabella contiene già: rank, cliente, fatturato totale, prodotto principale,
-   fatturato del prodotto principale. NON sintetizzare da altre sezioni.
-   Per "top N prodotti/fornitori" → leggi la tabella TOP 15 corrispondente.
-6. RICERCA PRODOTTI: usa l'ELENCO COMPLETO PRODOTTI per trovare il nome esatto.
-   Se l'utente scrive "selection" cerca nell'elenco il prodotto che contiene "SELECTION".
-   Poi cerca quel prodotto esatto nella sezione TOP E BOTTOM.
-7. Per "chi ha comprato di PIÙ X?" → leggi riga "↑ TOP" del prodotto X.
-8. Per "chi ha fatturato di MENO / comprato di meno X?" → leggi riga "↓ BOTTOM" del prodotto X.
-   La riga MINIMO o BOTTOM indica il cliente con il fatturato più basso per quel prodotto.
-9. Per "cosa ha comprato di più/meno il cliente Y?" → leggi TOP E BOTTOM PRODOTTI per CLIENTE.
-8. Per "trend/andamento" → leggi TREND MENSILE.
-9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
-10. Usa tabelle Markdown per confronti multi-riga.
-11. PROMO vs NORMALE — REGOLE UFFICIALI (identiche al grafico donut):
-    CLASSIFICAZIONE righe (da colonne Sconto7_Promozionali e Sconto4_Free):
-      • Vendita Normale = s7=0 E s4=0 (o vuoti/NaN)
-      • In Promozione   = s7>0 OPPURE s4>0 (qualsiasi valore, ESCLUSI 99 e 100)
-      • Omaggio         = s7=99 o 100  OPPURE  s4=99 o 100
-    METRICA: % calcolata su Kg (Peso_Netto_TotRiga) — identica al grafico donut.
-    SEZIONE "ANALISI PROMO vs NORMALE":
-      - Tot Kg = chilogrammi totali (Normale + Promo + Omaggio)
-      - Promo Kg = solo righe "In Promozione"
-      - % Promo(Kg) = Promo Kg / Tot Kg × 100
-    Per "chi ha comprato X più in promo?" → leggi CROSS % PROMO per PRODOTTO × CLIENTE,
-      trova prodotto X nell'INDICE, ordina per "% Promo" decrescente.
-    Per "% promo per cliente" → tabella ANALISI PROMO vs NORMALE per CLIENTE, colonna "% Promo(Kg)".
-    I dati AI e il grafico donut usano ESATTAMENTE gli stessi dati e le stesse regole.
-12. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
-    dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
-13. NON inventare valori, NON calcolare stime non supportate dai dati.
-14. NON creare tabelle Markdown con colonne inventate o non presenti nel contesto.
-    Se costruisci una tabella, ogni colonna deve essere una colonna che leggi nel contesto.
-    I valori devono essere COPIATI verbatim dal contesto, non calcolati né interpolati.
-15. Se un dato richiesto non è nella tabella pre-calcolata → dì "Dato non disponibile"
-    e suggerisci di usare i filtri della dashboard per ottenere il dettaglio.
+PESO:
+  Peso_Netto           = Peso netto singola riga
+  Peso_Lordo           = Peso lordo singola riga
+  Peso_Netto_TotRiga   = Kg netti totali riga → LA COLONNA KG PRINCIPALE per analisi volumi
+
+VALORI ECONOMICI:
+  Valuta_Ordine        = Valuta ordine
+  Prezzo_Netto         = Prezzo netto unitario
+  Prezzo_Lordo         = Prezzo lordo unitario
+  Importo_Netto_TotRiga= Fatturato netto € riga → LA COLONNA FATTURATO € PRINCIPALE
+
+SCONTI (per classificare le vendite):
+  Sconto1_Canale       = Sconto contrattuale 1 (non usato per classificazione promo)
+  Sconto2_Canale       = Sconto contrattuale 2 (non usato per classificazione promo)
+  Sconto3_Canale       = Sconto contrattuale 3 (non usato per classificazione promo)
+  Sconto5_Logistici    = Sconto logistico (non usato per classificazione promo)
+  Sconto6_Canvass      = Sconto temporaneo (non usato per classificazione promo)
+  Sconto4_Free         = Sconto promozionale libero → USATO per classificare promo
+  Sconto7_Promozionali = Sconto promozionale concordato → USATO per classificare promo
+
+  REGOLA CLASSIFICAZIONE (si applica SOLO a Sconto4_Free e Sconto7_Promozionali):
+    • Vendita Normale = Sconto7=0 E Sconto4=0 (o vuoti/NaN)
+    • In Promozione   = Sconto7>0 OPPURE Sconto4>0 (qualsiasi valore, ESCLUSI 99 e 100)
+    • Omaggio         = Sconto7=99 o 100  OPPURE  Sconto4=99 o 100
+
+LOGISTICA:
+  Cod_Plant, Plant     = Sito produttivo / entità legale
+  Key_Account          = Account di riferimento commerciale
+  Key_Account_Region   = Stato di competenza key account
+  Incoterm             = Incoterm ordine
+  Vettore              = Nome vettore di trasporto
+  Cod_Container        = Codice container
+  Magazzino_Partenza   = Magazzino di partenza merce
+  Resp                 = Responsabile inserimento ordine
+  Numero_Pallet        = Numero pallet
+  Sovrapponibile       = Pallet sovrapponibile (1=sì, 0=no)
+
+RIFERIMENTI TEMPORALI AGGREGATI:
+  Sett. Riferimento Data ordine   = Settimana dell'anno dell'ordine
+  Sett. Riferimento Data consegna = Settimana dell'anno della consegna
+  Mese Riferimento Data ordine    = Mese dell'ordine
+  Mese Riferimento Data consegna  = Mese della consegna
+  Anno data consegna              = Anno consegna
+  Anno data ordine                = Anno ordine
+  Anno data fattura               = Anno fattura
+  Anno data ordine Semplice       = Anno ordine (duplicato con formula diversa)
+
+════════════════════════════════════════════════════════════
+STRUTTURA DEL CONTESTO AI
+════════════════════════════════════════════════════════════
+Il contesto viene aggiornato ad ogni render e contiene sezioni pre-calcolate:
+
+  TOTALI COMPLESSIVI: somme esatte di Importo_Netto_TotRiga (€) e Peso_Netto_TotRiga (Kg)
+  TOP 15 per CLIENTE: aggregazione per Decr_Cliente_Fat, ordinata per € decrescenti
+  TOP 15 per PRODOTTO: aggregazione per Descr_Articolo, ordinata per € decrescenti
+  TOP 10 CLIENTI + PRODOTTO PRINCIPALE: tabella pre-calcolata con rank, cliente,
+    fatturato totale €, prodotto principale, fatturato prodotto principale €
+  TOP/BOTTOM CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti con più/meno acquisti
+  TOP/BOTTOM PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti con più/meno acquisti
+  TREND MENSILE: aggregazione mensile per Peso_Netto_TotRiga e Importo_Netto_TotRiga
+  ANALISI PROMO vs NORMALE: tabelle per cliente e prodotto con Kg promo/normale/omaggio e %
+  CROSS PROMO per PRODOTTO×CLIENTE: % promo su Kg per ogni combinazione prodotto-cliente
+
+════════════════════════════════════════════════════════════
+REGOLE DI RISPOSTA — OBBLIGATORIE
+════════════════════════════════════════════════════════════
+1. DATI ESATTI: tutti i valori nel contesto sono calcolati dal database, non stime.
+   Citali con certezza assoluta, senza disclaimer ("circa", "presumibilmente", ecc.).
+
+2. PERIODO: il contesto indica esplicitamente il periodo analizzato (es. 01/01/2026–31/01/2026).
+   Rispondi con certezza sull'anno/periodo senza aggiungere "non so se è 2026".
+
+3. NIENTE FRASI DI CAUTELA. Non scrivere mai:
+   "non sono sicuro" / "potrebbe essere" / "non possiamo confermare" /
+   "se i dati fossero disponibili" / "presumibilmente" / "stimo" / "circa"
+
+4. NO RIPETIZIONI: scrivi ogni concetto una sola volta. Concludi dopo l'ultima info utile.
+
+5. TOP N CLIENTI → usa SEMPRE la tabella "TOP 10 CLIENTI + PRODOTTO PRINCIPALE".
+   Quella tabella contiene già: rank, Decr_Cliente_Fat, Importo_Netto_TotRiga,
+   prodotto principale (Descr_Articolo con più fatturato), fatturato prodotto principale.
+   Non sintetizzare da altre sezioni — leggi quella tabella verbatim.
+
+6. TOP N PRODOTTI/FORNITORI → leggi la tabella TOP 15 per PRODOTTO/FORNITORE.
+
+7. "Chi ha comprato di PIÙ X?" → leggi riga "↑ TOP" sotto il prodotto X in TOP/BOTTOM CLIENTI.
+8. "Chi ha comprato di MENO X?" → leggi riga "↓ BOTTOM" sotto il prodotto X.
+9. "Cosa ha comprato di più/meno il cliente Y?" → leggi TOP/BOTTOM PRODOTTI per CLIENTE.
+10. "Trend/andamento" → leggi TREND MENSILE.
+11. Cita i valori con unità: "€ 1.234.567" oppure "1.234 Kg" (formato italiano con punto migliaia).
+12. Usa tabelle Markdown solo per confronti multi-riga. Ogni colonna della tabella deve
+    corrispondere a una colonna LETTA dal contesto, non calcolata autonomamente dall'AI.
+
+ANALISI PROMO:
+13. Per "% promo per cliente/prodotto" → leggi ANALISI PROMO vs NORMALE, colonna % Promo(Kg).
+    La % è calcolata su Peso_Netto_TotRiga (Kg), identica al grafico donut della dashboard.
+14. Per "chi ha comprato X più in promo?" → leggi CROSS PROMO per PRODOTTO×CLIENTE,
+    trova prodotto X, ordina per % Promo(Kg) decrescente.
+15. Gli Sconti da 1 a 6 (Canale, Logistici, Canvass) NON determinano se una vendita è promo.
+    Solo Sconto4_Free e Sconto7_Promozionali classificano promo/normale/omaggio.
+
+LIMITI:
+16. Se il dato richiesto non è nel contesto → dì "Dato non disponibile nel contesto attuale"
+    e suggerisci di usare i filtri della dashboard.
+17. NON inventare valori. NON costruire tabelle con colonne non presenti nel contesto.
+18. NON creare colonne calcolate autonomamente nelle tabelle (es. % variazione, medie
+    non presenti nel contesto). Riporta solo i valori già calcolati nel contesto.
 """
 
 # ---------------------------------------------------------------------------
@@ -2614,6 +2679,107 @@ elif page == "🎁 Analisi Customer Promo":
                 else:
                     st.info("File Vendite non trovato o nessun dato nel periodo selezionato.")
 
+                # ── TABELLA DETTAGLIO sotto il grafico ───────────────────────────
+                if _df_vendite is not None and not _df_vendite.empty:
+                    st.markdown("---")
+                    st.markdown("#### 📋 Dettaglio Vendite Promo / Normale")
+                    st.caption(
+                        "Tabella aggregata per Articolo × Cliente con % promo e % normale su Kg. "
+                        "Filtri applicati: stessi del grafico sopra."
+                    )
+
+                    # Usa df_s (già filtrato per art/cli dal form sopra)
+                    _df_tbl = df_s.copy() if '_f_art' in dir() or '_f_cli' in dir() else _df_vendite.copy()
+                    if _f_art and _COL_AT in _df_tbl.columns:
+                        _df_tbl = _df_tbl[_df_tbl[_COL_AT].astype(str).isin(_f_art)]
+                    if _f_cli and _COL_CL in _df_tbl.columns:
+                        _df_tbl = _df_tbl[_df_tbl[_COL_CL].astype(str).isin(_f_cli)]
+
+                    _has_tbl_cols = all(c in _df_tbl.columns for c in [_COL_AT, _COL_CL, _COL_KG])
+                    if _has_tbl_cols:
+                        # Aggregazione per Articolo × Cliente con breakdown per tipo
+                        _grp_cols = [_COL_AT, _COL_CL]
+                        _agg_base = (
+                            _df_tbl.groupby(_grp_cols + ['__tipo__'], observed=True)[[_COL_KG, _COL_EU, _COL_CT]]
+                            .sum(numeric_only=True)
+                            .reset_index()
+                        )
+                        # Pivot: una riga per Articolo×Cliente con colonne per tipo
+                        _pivot_kg = _agg_base.pivot_table(
+                            index=_grp_cols, columns='__tipo__', values=_COL_KG, aggfunc='sum', fill_value=0
+                        ).reset_index()
+                        _pivot_kg.columns = [c if isinstance(c, str) else f"Kg_{c}" for c in _pivot_kg.columns]
+
+                        # Totali per riga
+                        _tipo_cols_kg = [c for c in _pivot_kg.columns if c.startswith('Kg_') or c in ['In Promozione', 'Vendita Normale', 'Omaggio']]
+                        # Rinomina colonne pivot se non hanno già il prefisso
+                        _rename_map = {}
+                        for c in _pivot_kg.columns:
+                            if c in ('In Promozione', 'Vendita Normale', 'Omaggio'):
+                                _rename_map[c] = f'Kg_{c}'
+                        if _rename_map:
+                            _pivot_kg = _pivot_kg.rename(columns=_rename_map)
+
+                        _kg_promo   = _pivot_kg.get('Kg_In Promozione',   pd.Series(0, index=_pivot_kg.index))
+                        _kg_normale = _pivot_kg.get('Kg_Vendita Normale',  pd.Series(0, index=_pivot_kg.index))
+                        _kg_omaggio = _pivot_kg.get('Kg_Omaggio',          pd.Series(0, index=_pivot_kg.index))
+                        _kg_tot     = _kg_promo + _kg_normale + _kg_omaggio
+
+                        _pivot_kg['Kg Totali']   = _kg_tot
+                        _pivot_kg['Kg Promo']    = _kg_promo
+                        _pivot_kg['Kg Normale']  = _kg_normale
+                        _pivot_kg['Kg Omaggio']  = _kg_omaggio
+                        _pivot_kg['% Promo']     = (_kg_promo   / _kg_tot.replace(0,1) * 100).round(1)
+                        _pivot_kg['% Normale']   = (_kg_normale / _kg_tot.replace(0,1) * 100).round(1)
+                        _pivot_kg['% Omaggio']   = (_kg_omaggio / _kg_tot.replace(0,1) * 100).round(1)
+
+                        # Aggiungi € e CT totali
+                        _eur_ct = (
+                            _df_tbl.groupby(_grp_cols, observed=True)[[_COL_EU, _COL_CT]]
+                            .sum(numeric_only=True)
+                            .reset_index()
+                        )
+                        _pivot_kg = _pivot_kg.merge(_eur_ct, on=_grp_cols, how='left')
+
+                        # Selezione e ordinamento colonne finali
+                        _tbl_cols = [_COL_AT, _COL_CL, _COL_CT, 'Kg Totali', 'Kg Promo', 'Kg Normale',
+                                     'Kg Omaggio', '% Promo', '% Normale', '% Omaggio', _COL_EU]
+                        _tbl_cols = [c for c in _tbl_cols if c in _pivot_kg.columns]
+                        _tbl_final = (
+                            _pivot_kg[_tbl_cols]
+                            .sort_values('Kg Totali', ascending=False)
+                            .reset_index(drop=True)
+                        )
+
+                        st.dataframe(
+                            _tbl_final,
+                            column_config={
+                                _COL_AT:    st.column_config.TextColumn("🏷️ Articolo", width="medium"),
+                                _COL_CL:    st.column_config.TextColumn("👤 Cliente",  width="medium"),
+                                _COL_CT:    st.column_config.NumberColumn("CT",         format="%d"),
+                                'Kg Totali':  st.column_config.NumberColumn("Kg Tot",   format="%.0f"),
+                                'Kg Promo':   st.column_config.NumberColumn("Kg Promo", format="%.0f"),
+                                'Kg Normale': st.column_config.NumberColumn("Kg Norm",  format="%.0f"),
+                                'Kg Omaggio': st.column_config.NumberColumn("Kg Omag",  format="%.0f"),
+                                '% Promo':    st.column_config.ProgressColumn("% Promo", min_value=0, max_value=100, format="%.1f%%"),
+                                '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
+                                '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
+                                _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
+                            },
+                            use_container_width=True, hide_index=True, height=400
+                        )
+                        # Download Excel
+                        if not _tbl_final.empty:
+                            st.download_button(
+                                "📥 Scarica tabella Excel",
+                                data=convert_df_to_excel(_tbl_final),
+                                file_name=f"Promo_Detail_{G_START}_{G_END}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="promo_detail_download"
+                            )
+                    else:
+                        st.caption("⚠️ Colonne insufficienti per la tabella dettaglio.")
+
             with col_pr:
                 st.subheader("Top Promozioni (Forecast vs Actual)")
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
@@ -2817,12 +2983,15 @@ elif page == "📦 Analisi Acquisti":
         df_pu_global = df_purch_processed.copy()
         st.sidebar.markdown("### 🔍 Filtri Acquisti")
 
-        # --- Filtro Division (con default 021, modificabile) ---
+        # --- Filtro Division (considera _g_entity globale come default) ---
+        sel_div_pu = None
         if pu_div in df_pu_global.columns:
             divs = sorted(df_pu_global[pu_div].astype(str).unique())
             saved_div = pu_saved.get("sel_div_pu")
             if saved_div and saved_div in divs:
                 default_div_idx = divs.index(saved_div)
+            elif _g_entity in divs:
+                default_div_idx = divs.index(_g_entity)
             elif "021" in divs:
                 default_div_idx = divs.index("021")
             elif "21" in divs:
@@ -2831,8 +3000,6 @@ elif page == "📦 Analisi Acquisti":
                 default_div_idx = 0
             sel_div_pu   = st.sidebar.selectbox("Divisione", divs, index=default_div_idx)
             df_pu_global = df_pu_global[df_pu_global[pu_div].astype(str) == sel_div_pu]
-        else:
-            sel_div_pu = None
 
         # --- Periodo di Analisi ---
         # FIX: converte la colonna data se non è già datetime,
