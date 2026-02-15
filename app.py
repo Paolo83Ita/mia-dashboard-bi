@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v73.0 - Fix crash: empty label radio, context hard-cap 10k char, rimossi use_container_width: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v75.0 - Fix Grok: ripristinato use_container_width, riordinato context builder (TOP10 prima di CROSS), log AI dettagliato: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v73.0",
+    page_title="EITA Analytics Pro v75.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -421,7 +421,7 @@ def guess_column_role(df: pd.DataFrame, page_type: str = "Sales") -> dict:
             'euro':     ['Importo_Netto_TotRiga'],
             'kg':       ['Peso_Netto_TotRiga'],
             'cartons':  ['Qta_Cartoni_Ordinato'],
-            'date':     ['Data_Ordine', 'Data_Fattura'],
+            'date':     ['Data_Fattura', 'Data_Ordine', 'Data_Consegna', 'Data_DDT', 'Data_Partenza'],
             'entity':   ['Entity'],
             'customer': ['Decr_Cliente_Fat', 'Descr_Cliente_Fat', 'Descr_Cliente_Dest'],
             'product':  ['Descr_Articolo'],
@@ -602,7 +602,7 @@ IDENTIFICAZIONE:
   Numero_Ordine        = Numero ordine sistema
   Numero_Ordine_Cliente= Numero ordine del cliente
 
-DATE (usa Data_Documento per il filtro principale):
+DATE (usa Data_Fattura come data principale; fallback: Data_Ordine, Data_Consegna, Data_DDT):
   Data_Ordine          = Data inserimento ordine
   Data_Ordine_Cliente  = Data emissione ordine cliente
   Data_DDT             = Data DDT
@@ -890,6 +890,7 @@ def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
         fig,
         config=cfg,
         key=key,
+        use_container_width=True,
     )
 
 
@@ -907,7 +908,13 @@ _COL_EU = 'Importo_Netto_TotRiga'  # colonna € netti
 _COL_CT = 'Qta_Cartoni_Ordinato'   # colonna cartoni
 _COL_AT = 'Descr_Articolo'         # colonna articolo
 _COL_CL = 'Decr_Cliente_Fat'       # colonna cliente fatturazione
-_COL_DT = 'Data_Documento'         # colonna data
+_COL_DT = 'Data_Fattura'            # colonna data principale (fatturazione)
+# Ordine di preferenza per il rilevamento colonna data nel file From_order_to_invoice:
+# Data_Fattura → Data_Ordine → Data_Consegna → Data_DDT → Data_Partenza → Data_Documento
+_COL_DT_FALLBACKS = [
+    'Data_Fattura', 'Data_Ordine', 'Data_Consegna',
+    'Data_DDT', 'Data_Partenza', 'Data_Documento', 'Data', 'Date'
+]
 
 # ── Legenda COMPLETA colonne From_order_to_invoice ──────────────────────
 # Fonte: documentazione interna EITA (fornita dall'utente)
@@ -959,11 +966,16 @@ def _filtra_vendite_periodo(df_sales: "pd.DataFrame", g_start, g_end,
     Restituisce il df filtrato pronto per grafico E contesto AI.
     """
     df = df_sales.copy()
-    # Filtro data
-    col_dt = next((c for c in [_COL_DT, 'Data', 'Date'] if c in df.columns), None)
-    if col_dt and pd.api.types.is_datetime64_any_dtype(df[col_dt]):
+    # Filtro data — usa la lista completa di fallback per trovare la colonna giusta
+    col_dt = next((c for c in _COL_DT_FALLBACKS if c in df.columns
+                   and pd.api.types.is_datetime64_any_dtype(df[c])), None)
+    if col_dt is None:
+        # Ultimo tentativo: cerca qualsiasi colonna datetime nel df
+        col_dt = next((c for c in df.columns
+                       if pd.api.types.is_datetime64_any_dtype(df[c])), None)
+    if col_dt:
         df = df[(df[col_dt].dt.date >= g_start) & (df[col_dt].dt.date <= g_end)]
-    # Filtro entity (opzionale)
+    # Filtro entity
     if entity:
         ent_col = next((c for c in ['Entity', 'Società', 'Company', 'Division', 'Azienda']
                         if c in df.columns), None)
@@ -983,7 +995,7 @@ _CTX_COL_MAPS = {
         "importo":  ["Importo_Netto_TotRiga", "Euro", "Fatturato", "Netto"],
         "kg":       ["Peso_Netto_TotRiga", "Kg", "Peso"],
         "entita":   ["Entity", "Società", "Division"],
-        "data":     ["Data_Documento", "Data", "Date"],
+        "data":     ["Data_Fattura", "Data_Ordine", "Data_Consegna", "Data_DDT", "Data_Documento", "Data", "Date"],
     },
     # Dataset Promozioni
     "promo": {
@@ -991,7 +1003,7 @@ _CTX_COL_MAPS = {
         "cliente":  ["Decr_Cliente_Fat", "Descr_Cliente_Fat", "Cliente"],
         "importo":  ["Importo_Netto_TotRiga", "Euro"],
         "qty":      ["Qta_Cartoni_Ordinato", "Quantità"],
-        "data":     ["Data_Documento", "Data"],
+        "data":     ["Data_Fattura", "Data_Ordine", "Data_Consegna", "Data_DDT", "Data_Documento", "Data"],
     },
     # Dataset Acquisti
     "acquisti": {
@@ -1190,11 +1202,46 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
         if len("\n".join(parts)) > 2000:
             break  # limite token (8k char max totale)
 
+    # --- TABELLA PRONTA: Top 5 clienti + prodotto principale + fatturato ---
+    # Pre-calcolata per rispondere ESATTAMENTE a "top N clienti con prodotto principale"
+    # POSIZIONE: PRIMA dei CROSS (che sono pesanti) → se il contesto viene troncato
+    # questa tabella è già inclusa (risponde alla domanda più frequente).
+    if col_cliente and col_prodotto and val_cols:
+        try:
+            cli_tot = (df.groupby(col_cliente, observed=True)[val_cols[0]]
+                        .sum().sort_values(ascending=False).head(5))
+            top10_lines = [
+                f"\nTOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE:",
+                f"(usa questa tabella per 'top N clienti' — dati PRE-CALCOLATI esatti)",
+                f"{'#':<3} | {'Cliente':<40} | {'Fatturato €':>14} | {'Prodotto Principale':<40} | {'Fat. Prod. Princ. €':>19}",
+                "-" * 130,
+            ]
+            for rank, (cli, fat_tot) in enumerate(cli_tot.items(), 1):
+                df_cli = df[df[col_cliente] == cli]
+                prod_agg = (df_cli.groupby(col_prodotto, observed=True)[val_cols[0]]
+                                  .sum().sort_values(ascending=False))
+                if prod_agg.empty:
+                    top_prod, fat_prod = "-", 0.0
+                else:
+                    top_prod = prod_agg.index[0]
+                    fat_prod = prod_agg.values[0]
+                cli_str  = str(cli)[:39]
+                prod_str = str(top_prod)[:39]
+                top10_lines.append(
+                    f"{rank:<3} | {cli_str:<40} | {_fmt_num(fat_tot):>14} | {prod_str:<40} | {_fmt_num(fat_prod):>19}"
+                )
+            parts.append("\n".join(top10_lines))
+        except Exception as e:
+            parts.append(f"[Top10 error: {e}]")
+
+    # --- Trend mensile ---
+    if col_data and val_cols:
+        parts.append(_monthly_trend(df, col_data, val_cols[:2]))
+
     # --- Indice prodotti compatto (fuzzy match AI: "selection"→nome esatto) ---
     if col_prodotto:
         try:
             all_prods = sorted(df[col_prodotto].dropna().astype(str).unique().tolist())
-            # Formato: una riga per prodotto (più leggibile dell'AI, meno token del CSV)
             prod_idx = ["\nINDICE PRODOTTI (usa per fuzzy match su nome parziale):"]
             for p in all_prods:
                 prod_idx.append(f"  • {p}")
@@ -1276,41 +1323,6 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                 parts.append("\n".join(cross2_lines))
         except Exception as e:
             parts.append(f"[Cross-agg2 error: {e}]")
-
-    # --- TABELLA PRONTA: Top 10 clienti + prodotto principale + fatturato ---
-    # Pre-calcolata per rispondere ESATTAMENTE a "top N clienti con prodotto principale"
-    # L'AI legge questa tabella direttamente senza sintetizzare da sezioni diverse.
-    if col_cliente and col_prodotto and val_cols:
-        try:
-            cli_tot = (df.groupby(col_cliente, observed=True)[val_cols[0]]
-                        .sum().sort_values(ascending=False).head(5))
-            top10_lines = [
-                f"\nTOP 10 CLIENTI PER FATTURATO con PRODOTTO PRINCIPALE:",
-                f"(usa questa tabella per 'top N clienti' — dati PRE-CALCOLATI esatti)",
-                f"{'#':<3} | {'Cliente':<40} | {'Fatturato €':>14} | {'Prodotto Principale':<40} | {'Fat. Prod. Princ. €':>19}",
-                "-" * 130,
-            ]
-            for rank, (cli, fat_tot) in enumerate(cli_tot.items(), 1):
-                df_cli = df[df[col_cliente] == cli]
-                prod_agg = (df_cli.groupby(col_prodotto, observed=True)[val_cols[0]]
-                                  .sum().sort_values(ascending=False))
-                if prod_agg.empty:
-                    top_prod, fat_prod = "-", 0.0
-                else:
-                    top_prod = prod_agg.index[0]
-                    fat_prod = prod_agg.values[0]
-                cli_str  = str(cli)[:39]
-                prod_str = str(top_prod)[:39]
-                top10_lines.append(
-                    f"{rank:<3} | {cli_str:<40} | {_fmt_num(fat_tot):>14} | {prod_str:<40} | {_fmt_num(fat_prod):>19}"
-                )
-            parts.append("\n".join(top10_lines))
-        except Exception as e:
-            parts.append(f"[Top10 error: {e}]")
-
-    # --- Trend mensile ---
-    if col_data and val_cols:
-        parts.append(_monthly_trend(df, col_data, val_cols[:2]))
 
     # --- Analisi PROMO vs NORMALE (solo se le colonne sconto sono presenti) ---
     # Risponde a: "chi ha comprato X più in promo?" / "% promo per cliente"
@@ -1866,7 +1878,13 @@ def render_ai_assistant(context_df: pd.DataFrame = None, context_label: str = ""
                 "3. Monitorare: console.groq.com/usage"
             )
         else:
-            st.sidebar.error(f"Errore AI [{prov_used}]: {err_msg}")
+            # Mostra errore con provider, modello e dimensione contesto
+            ctx_size = len(context_text) if 'context_text' in dir() else 0
+            st.sidebar.error(
+                f"❌ Errore AI [{prov_used} / {mod_used}]: {err_msg}\n\n"
+                f"📐 Contesto: {ctx_size:,} chars | "
+                f"Suggerimento: riduci il periodo o filtra i dati."
+            )
 
 
 
@@ -1991,7 +2009,11 @@ if _df_proc_pre is not None:
 
 # Aggiorna il contesto AI con i dati corretti DEL RENDER CORRENTE
 if _df_sales_global is not None and not _df_sales_global.empty:
-    st.session_state["ai_context_df"]    = _df_sales_global
+    # Imposta solo se non è già stato aggiornato da una pagina (es. Page 1 usa df_global)
+    # Page 1 aggiornerà ai_context_df con df_global (filtrato per data corretta) → NON sovrascrivere
+    # Solo il pre-load iniziale (prima che Page 1 giri) usa questo valore come default.
+    if st.session_state.get("ai_context_df") is None:
+        st.session_state["ai_context_df"] = _df_sales_global
     st.session_state["ai_context_label"] = f"Vendite {_g_entity}{_periodo_g}"
 
 # AI Assistant — ora legge il contesto AGGIORNATO
@@ -2117,16 +2139,15 @@ if page == "📊 Vendite & Fatturazione":
 
         st.title(f"Performance Overview: {sel_ent or 'Global'}")
 
-        # Il contesto AI è già aggiornato dal blocco globale con _df_sales_global.
-        # Qui aggiorniamo label e df solo se l'utente ha applicato filtri aggiuntivi
-        # (es. entity diversa da EITA, filtri prodotto/cliente specifici).
+        # ── AGGIORNA CONTESTO AI con df_global (filtrato per entity+data+filtri extra) ──
+        # df_global ha entity=_g_entity + data col_data in [G_START,G_END] + eventuali filtri avanzati
+        # → è il dato esatto che l'utente vede nei grafici = unica fonte di verità per l'AI
         try:
             _periodo_sales = f" | Periodo: {d_start.strftime('%d/%m/%Y')} – {d_end.strftime('%d/%m/%Y')}"
         except Exception:
             _periodo_sales = _periodo_g
-        # Solo se df_global è diverso da _df_sales_global (filtri extra applicati)
-        # Contesto AI già aggiornato nel blocco globale con _df_sales_global.
-        # Aggiorna solo la label con il periodo corrente.
+        if not df_global.empty:
+            st.session_state["ai_context_df"]    = df_global
         st.session_state["ai_context_label"] = f"Vendite {_g_entity}{_periodo_sales}"
 
         if not df_global.empty:
@@ -2341,7 +2362,7 @@ if page == "📊 Vendite & Fatturazione":
                                 'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
                                 'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
                             }, hide_index=True
-                        )
+                        , use_container_width=True)
 
                         st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
                         selected_val = st.selectbox(
@@ -2368,7 +2389,7 @@ if page == "📊 Vendite & Fatturazione":
                                     'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
                                     'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
                                 }, hide_index=True
-                            )
+                            , use_container_width=True)
 
                         # Export flat (tutti i livelli — grouped su 2 chiavi)
                         full_flat = (
@@ -2404,7 +2425,7 @@ if page == "📊 Vendite & Fatturazione":
                             'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med",format="€ %.2f"),
                         },
                         hide_index=True, height=500
-                    )
+                    , use_container_width=True)
                     st.download_button(
                         "📥 Scarica Dettaglio Excel (.xlsx)",
                         data=convert_df_to_excel(ps),
@@ -2770,7 +2791,7 @@ elif page == "🎁 Analisi Customer Promo":
                                 '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
                                 _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
                             }, hide_index=True, height=400
-                        )
+                        , use_container_width=True)
                         # Download Excel
                         if not _tbl_final.empty:
                             st.download_button(
@@ -2901,7 +2922,7 @@ elif page == "🎁 Analisi Customer Promo":
                         p_start: st.column_config.DateColumn("Inizio Sell-In", format="DD/MM/YYYY"),
                     },
                     hide_index=True, height=500
-                )
+                , use_container_width=True)
                 st.download_button(
                     "📥 Scarica Report Promo Excel (.xlsx)",
                     data=convert_df_to_excel(df_p_show),
@@ -3478,7 +3499,7 @@ elif page == "📦 Analisi Acquisti":
             st.dataframe(
                 df_final,
                 column_config=col_cfg, height=520, hide_index=True
-            )
+            , use_container_width=True)
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
                 data=convert_df_to_excel(df_final),
