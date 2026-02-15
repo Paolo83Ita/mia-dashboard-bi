@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v75.0 - Fix Grok: ripristinato use_container_width, riordinato context builder (TOP10 prima di CROSS), log AI dettagliato: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v76.0 - Fix Page3: black page (periodo vuoto), OOM (rimossi .copy() inutili, cap tabella 5k righe), filtri colonna lightweight: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v75.0",
+    page_title="EITA Analytics Pro v76.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2979,6 +2979,15 @@ elif page == "📦 Analisi Acquisti":
     else:
         st.error("Nessun file trovato.")
 
+    if df_purch_processed is None:
+        if files:
+            st.warning(
+                "⚠️ Impossibile caricare il file acquisti. "
+                "Verifica che il file Purchase History sia accessibile su Google Drive "
+                "e che il servizio Google sia connesso."
+            )
+        # else: il messaggio "Nessun file trovato" è già sopra
+    
     if df_purch_processed is not None:
         guesses_pu  = guess_column_role(df_purch_processed, "Purchase")
         # Colonne da nascondere (dalla legenda: Part number old = vecchi codici, non mostrare nei filtri)
@@ -3004,7 +3013,7 @@ elif page == "📦 Analisi Acquisti":
             pu_cat    = st.selectbox("Part Group",       all_cols_pu,
                          index=set_idx(pu_saved.get("pu_cat",    guesses_pu.get('category')),   all_cols_pu))
 
-        df_pu_global = df_purch_processed.copy()
+        df_pu_global = df_purch_processed  # NO .copy() — i filtri successivi creano nuovi oggetti
         st.sidebar.markdown("### 🔍 Filtri Acquisti")
 
         # --- Filtro Division (considera _g_entity globale come default) ---
@@ -3027,7 +3036,7 @@ elif page == "📦 Analisi Acquisti":
 
         # --- Periodo di Analisi ---
         # FIX: converte la colonna data se non è già datetime,
-        # poi mostra il filtro (identico alla Pagina Vendite).
+        # poi applica il filtro globale G_START/G_END.
         d_start_pu = d_end_pu = None
         if pu_date in df_pu_global.columns:
             # Forza conversione datetime se necessario
@@ -3042,18 +3051,27 @@ elif page == "📦 Analisi Acquisti":
                 _min_d = df_pu_global[pu_date].min()
                 _max_d = df_pu_global[pu_date].max()
                 if pd.notnull(_min_d) and pd.notnull(_max_d):
-                    saved_start = pu_saved.get("d_start_pu")
-                    saved_end   = pu_saved.get("d_end_pu")
-                    def_start   = datetime.date.fromisoformat(saved_start) if saved_start else _min_d.date()
-                    def_end     = datetime.date.fromisoformat(saved_end)   if saved_end   else _max_d.date()
-                    def_start   = max(def_start, _min_d.date())
-                    def_end     = min(def_end,   _max_d.date())
                     # Usa il selettore data GLOBALE (G_START / G_END)
                     d_start_pu, d_end_pu = G_START, G_END
-                    df_pu_global = df_pu_global[
+                    df_filtered_period = df_pu_global[
                         (df_pu_global[pu_date].dt.date >= d_start_pu) &
                         (df_pu_global[pu_date].dt.date <= d_end_pu)
                     ]
+                    # FIX PAGINA NERA: se il filtro periodo svuota il df,
+                    # avvisa l'utente e mostra lo storico completo disponibile
+                    if df_filtered_period.empty:
+                        st.warning(
+                            f"⚠️ Nessun dato acquisti nel periodo "
+                            f"**{G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}**.\n\n"
+                            f"Dati disponibili dal **{_min_d.strftime('%d/%m/%Y')}** "
+                            f"al **{_max_d.strftime('%d/%m/%Y')}**.\n\n"
+                            f"Modifica il periodo nella sidebar per visualizzare i dati acquisti."
+                        )
+                        # Usa lo storico completo della divisione selezionata per mostrare qualcosa
+                        d_start_pu, d_end_pu = _min_d.date(), _max_d.date()
+                        df_pu_global = df_pu_global  # non filtrare — mostra tutto
+                    else:
+                        df_pu_global = df_filtered_period
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
@@ -3395,57 +3413,55 @@ elif page == "📦 Analisi Acquisti":
                     horizontal=False, key="pu_sort_dir"
                 )
 
-            # ---- RIGA 2: Filtri per Colonna (tutti multiselect con "Tutti") ----
-            with st.expander("🔍 Filtri per Colonna (singolo / multiplo)", expanded=False):
-                st.caption("Seleziona valori per colonna. 'Tutti' = nessun filtro. Colonne con troppi valori univoci (>500) non mostrano il filtro per prestazioni.")
-                df_detail_filtered = df_pu_global.copy()
-                ncols_per_row = 4
-                rows_needed   = (len(all_available_cols) + ncols_per_row - 1) // ncols_per_row
+            # ---- RIGA 2: Filtri per Colonna — solo colonne categoriche chiave ----
+            # FIX MEMORY: il vecchio loop su TUTTE le colonne eseguiva
+            # .astype(str).unique() per ogni colonna ad ogni render → OOM.
+            # Nuova logica: filtra solo su un sottoinsieme di colonne utili (≤10),
+            # con cap a 300 valori unici per colonna, dentro un st.form.
+            _FILTERABLE_COLS = [
+                c for c in [pu_supp, pu_prod, pu_cat,
+                             'Part group description', 'Part class description',
+                             'Division', 'Facility', 'Warehouse', 'Incoterm']
+                if c and c in df_pu_global.columns
+            ]
+            # Rimuovi duplicati preservando l'ordine
+            seen = set()
+            _FILTERABLE_COLS = [c for c in _FILTERABLE_COLS if not (c in seen or seen.add(c))]
 
-                for row_idx in range(rows_needed):
-                    fcols = st.columns(ncols_per_row)
-                    for col_idx in range(ncols_per_row):
-                        item_idx = row_idx * ncols_per_row + col_idx
-                        if item_idx >= len(all_available_cols):
-                            break
-                        col_name = all_available_cols[item_idx]
-                        with fcols[col_idx]:
-                            # TUTTE LE COLONNE come multiselect con "Tutti"
-                            # (incluse numeriche e date — converte in stringa)
-                            if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
-                                # Per date mostra le date come stringa formattata
-                                unique_str = sorted(
-                                    df_pu_global[col_name].dropna()
-                                    .dt.strftime("%d/%m/%Y").unique().tolist()
-                                )
-                            else:
-                                unique_str = sorted(
-                                    df_pu_global[col_name].dropna()
-                                    .astype(str).unique().tolist()
-                                )
+            df_detail_filtered = df_pu_global  # NO .copy() — i filtri colonna creano nuovi oggetti
 
-                            if len(unique_str) > 500:
-                                st.caption(f"{col_name}: troppi valori ({len(unique_str)}), usa barra di ricerca nella tabella")
-                            else:
-                                opts    = ["Tutti"] + unique_str
-                                sel_flt = st.multiselect(
-                                    label=col_name,
-                                    options=opts,
+            with st.expander("🔍 Filtri per Colonna", expanded=False):
+                st.caption(
+                    "Filtri disponibili sulle colonne categoriche principali. "
+                    "Per filtri su date/importi usa la sidebar."
+                )
+                with st.form("pu_col_filters_form"):
+                    filter_cols_ui = st.columns(min(len(_FILTERABLE_COLS), 3) or 1)
+                    staged_pu_filters = {}
+                    for j, col_name in enumerate(_FILTERABLE_COLS):
+                        with filter_cols_ui[j % len(filter_cols_ui)]:
+                            uniq = sorted(df_pu_global[col_name].dropna().astype(str).unique().tolist())
+                            if len(uniq) <= 300:
+                                sel = st.multiselect(
+                                    col_name,
+                                    options=["Tutti"] + uniq,
                                     default=["Tutti"],
-                                    key=f"pu_f_{col_name}",
-                                    help=_COL_LEGEND.get(col_name, "")
+                                    key=f"pu_cf_{col_name}"
                                 )
-                                if sel_flt and "Tutti" not in sel_flt:
-                                    if pd.api.types.is_datetime64_any_dtype(df_pu_global[col_name]):
-                                        # Filtra convertendo la colonna in stringa dd/mm/yyyy
-                                        df_detail_filtered = df_detail_filtered[
-                                            df_detail_filtered[col_name].dt.strftime("%d/%m/%Y")
-                                            .isin(sel_flt)
-                                        ]
-                                    else:
-                                        df_detail_filtered = df_detail_filtered[
-                                            df_detail_filtered[col_name].astype(str).isin(sel_flt)
-                                        ]
+                                if sel and "Tutti" not in sel:
+                                    staged_pu_filters[col_name] = sel
+                            else:
+                                st.caption(f"{col_name}: {len(uniq)} valori, usa ricerca nella tabella")
+                    apply_pu_filters = st.form_submit_button("🔄 Applica Filtri Colonna")
+
+                if apply_pu_filters:
+                    st.session_state['pu_col_filters'] = staged_pu_filters
+                active_pu_filters = st.session_state.get('pu_col_filters', {})
+                for col_name, sel_vals in active_pu_filters.items():
+                    if col_name in df_detail_filtered.columns:
+                        df_detail_filtered = df_detail_filtered[
+                            df_detail_filtered[col_name].astype(str).isin(sel_vals)
+                        ]
 
             # ---- Applica ordinamento ----
             asc_flag = (sort_asc_pu == "⬆️ Cresc.")
@@ -3457,7 +3473,17 @@ elif page == "📦 Analisi Acquisti":
             final_cols = [c for c in cols_to_display if c in df_detail_filtered.columns]
             df_final   = df_detail_filtered[final_cols] if final_cols else df_detail_filtered
 
-            st.caption(f"Righe visualizzate: **{len(df_final):,}** / {len(df_pu_global):,} totali")
+            # CAP DISPLAY: Streamlit renderizza tutto in DOM → troppo RAM con 100k+ righe
+            _MAX_ROWS_DISPLAY = 5000
+            _total_rows = len(df_final)
+            if _total_rows > _MAX_ROWS_DISPLAY:
+                df_final = df_final.head(_MAX_ROWS_DISPLAY)
+                st.caption(
+                    f"⚠️ Tabella limitata a **{_MAX_ROWS_DISPLAY:,}** righe su **{_total_rows:,}** totali. "
+                    f"Applica filtri per vedere righe specifiche oppure usa il download Excel per l'export completo."
+                )
+            else:
+                st.caption(f"Righe visualizzate: **{_total_rows:,}** / {len(df_pu_global):,} totali")
 
             # Column config con help= per tooltip (appare su hover sull'icona ?)
             col_cfg = {}
