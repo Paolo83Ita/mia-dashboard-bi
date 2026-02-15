@@ -15,7 +15,7 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v69.0 - Fix bug render lag: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v69.1 - Fix bug CROSS tipo==Promo→tipo==In Promozione, render lag: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
     page_title="EITA Analytics Pro v69.0",
@@ -1262,7 +1262,7 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                                .sum().sort_values(ascending=False).head(40).index.tolist())
                 for prod in top_p_list:
                     df_p = df_tmp[df_tmp[col_prodotto] == prod]
-                    is_p_promo = df_p["__tipo__"] == "Promo"
+                    is_p_promo = df_p["__tipo__"] == "In Promozione"
                     cli_grp = df_p.groupby(col_cliente, observed=True)
                     cli_tot_m  = cli_grp[_metric_col].sum()
                     cli_promo_m = df_p[is_p_promo].groupby(col_cliente, observed=True)[_metric_col].sum()
