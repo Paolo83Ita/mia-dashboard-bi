@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v65.0 - Fix data filter nel grafico promo, contesto AI pagina 2 allineato al periodo)
+# 1. CONFIGURAZIONE & STILE (v66.0 - Unifica metrica AI e donut su Kg, donut mostra anche €, elimina discrepanza definitiva)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v65.0",
+    page_title="EITA Analytics Pro v66.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -638,13 +638,15 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 9. Cita i valori con unità: "€ 1.234.567" o "1.234 Kg" (formato italiano).
 10. Usa tabelle Markdown per confronti multi-riga.
 11. PROMO vs NORMALE: la sezione "ANALISI PROMO vs NORMALE" mostra per ogni cliente/prodotto:
-    - Totale €: fatturato complessivo
-    - Promo €: righe con almeno uno sconto (Sconto7 o Sconto4) diverso da zero
-    - Normale €: righe con tutti gli sconti a zero
-    - % Promo: percentuale del fatturato venduto in promozione
+    - Tot Kg / Promo Kg: chilogrammi totali e in promozione
+    - % Promo(Kg): percentuale calcolata su Kg — IDENTICA al grafico donut della pagina 2
+    - Tot € / Promo €: euro totali e in promozione (metrica secondaria)
+    ⚠️ IMPORTANTE: % Promo è calcolata su Kg, NON su €.
+    Righe con Sconto=0 e €=0 ma Kg>0 (resi/campioni) abbassano il % Kg ma non quello €.
+    Questo è il motivo per cui % Kg e % € possono differire — usa SEMPRE % Kg per rispondere.
     Per "chi ha comprato X più in promo?" → leggi "CROSS: % PROMO per PRODOTTO × CLIENTE"
-    e trova il prodotto X, poi ordina per "% promo" decrescente.
-    Per "% promo per cliente" → leggi la tabella ANALISI PROMO vs NORMALE per CLIENTE.
+    e trova il prodotto X, poi ordina per "% Promo" (Kg) decrescente.
+    Per "% promo per cliente" → leggi la tabella ANALISI PROMO vs NORMALE per CLIENTE, colonna "% Promo(Kg)".
 12. SOLO se il dato richiesto NON è presente in nessuna sezione del contesto →
     dì "Dato non disponibile nel contesto attuale" e suggerisci di filtrare i dati.
 13. NON inventare valori, NON calcolare stime non supportate dai dati.
@@ -1128,72 +1130,87 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
                 is_promo = df_tmp[col_s7].fillna(0) != 0
             df_tmp["__tipo__"] = is_promo.map({True: "Promo", False: "Normale"})
 
-            # Aggregazione per cliente: totale, promo, normale, % promo
+            # METRICA UNIFICATA: usa Kg (col_kg) se disponibile, altrimenti €
+            # Il grafico donut usa Kg → per coerenza l'AI usa la stessa metrica
+            # QUESTO ELIMINA LA DISCREPANZA: righe con €=0 e Kg>0 (resi/campioni)
+            # venivano conteggiate diversamente con € vs Kg
+            _metric_col = col_kg if (col_kg and col_kg in df_tmp.columns) else val_cols[0]
+            _metric_label = "Kg" if _metric_col == col_kg else "€"
+            _eur_col = val_cols[0] if val_cols else None  # per riportare € a parte
+
+            # Aggregazione per cliente: totale, promo, normale, % promo (su Kg)
             grp = df_tmp.groupby(col_cliente, observed=True)
-            tot_imp = grp[val_cols[0]].sum()
-            promo_imp = df_tmp[is_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
-            norm_imp  = df_tmp[~is_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
+            tot_m  = grp[_metric_col].sum()
+            promo_m = df_tmp[is_promo].groupby(col_cliente, observed=True)[_metric_col].sum()
+            norm_m  = df_tmp[~is_promo].groupby(col_cliente, observed=True)[_metric_col].sum()
+            # Aggiungi anche € per informazione
+            tot_eur_c   = grp[_eur_col].sum() if _eur_col and _eur_col != _metric_col else tot_m
+            promo_eur_c = df_tmp[is_promo].groupby(col_cliente, observed=True)[_eur_col].sum() if _eur_col and _eur_col != _metric_col else promo_m
 
             combined = pd.DataFrame({
-                "Totale":  tot_imp,
-                "Promo":   promo_imp,
-                "Normale": norm_imp,
+                "Totale":    tot_m,
+                "Promo":     promo_m,
+                "Normale":   norm_m,
+                "Tot€":      tot_eur_c,
+                "Promo€":    promo_eur_c,
             }).fillna(0)
             combined["% Promo"] = (combined["Promo"] / combined["Totale"].replace(0, 1) * 100).round(1)
             combined = combined.sort_values("% Promo", ascending=False).reset_index()
 
             promo_lines = [f"\nANALISI PROMO vs NORMALE per CLIENTE"]
             promo_lines.append(f"(Sconto7={col_s7}" + (f", Sconto4={col_s4}" if col_s4 else "") + ")")
+            promo_lines.append(f"⚠️ METRICA: % calcolata su {_metric_label} — UGUALE al grafico donut (non su €)")
             promo_lines.append(f"Regola: Promo = almeno uno sconto != 0 | Normale = tutti sconti a zero")
-            promo_lines.append(f"{'Cliente':<40} | {'Totale €':>12} | {'Promo €':>12} | {'Normale €':>12} | {'% Promo':>8}")
-            promo_lines.append("-" * 95)
+            promo_lines.append(f"{'Cliente':<40} | {'Tot Kg':>10} | {'Promo Kg':>10} | {'% Promo(Kg)':>12} | {'Tot €':>12} | {'Promo €':>12}")
+            promo_lines.append("-" * 105)
             for _, row in combined.iterrows():
                 cli = str(row[col_cliente])[:39]
                 promo_lines.append(
-                    f"{cli:<40} | {_fmt_num(row['Totale']):>12} | {_fmt_num(row['Promo']):>12} | {_fmt_num(row['Normale']):>12} | {row['% Promo']:>7.1f}%"
+                    f"{cli:<40} | {_fmt_num(row['Totale']):>10} | {_fmt_num(row['Promo']):>10} | {row['% Promo']:>11.1f}% | {_fmt_num(row['Tot€']):>12} | {_fmt_num(row['Promo€']):>12}"
                 )
-                if len("\n".join(promo_lines)) > 3000:
+                if len("\n".join(promo_lines)) > 3500:
                     promo_lines.append("  [...altri clienti omessi per limite token]")
                     break
             promo_lines.append("")
-            promo_lines.append("STESSO CALCOLO per PRODOTTO (top 20 prodotti per fatturato):")
-            promo_lines.append(f"{'Prodotto':<40} | {'Totale €':>12} | {'Promo €':>12} | {'Normale €':>12} | {'% Promo':>8}")
-            promo_lines.append("-" * 95)
+            promo_lines.append(f"STESSO CALCOLO per PRODOTTO (% su {_metric_label}, top 20 per €):")
+            promo_lines.append(f"{'Prodotto':<40} | {'Tot Kg':>10} | {'Promo Kg':>10} | {'% Promo(Kg)':>12} | {'Tot €':>12}")
+            promo_lines.append("-" * 90)
 
             if col_prodotto:
                 grp_p = df_tmp.groupby(col_prodotto, observed=True)
-                tot_p   = grp_p[val_cols[0]].sum()
-                promo_p = df_tmp[is_promo].groupby(col_prodotto, observed=True)[val_cols[0]].sum()
-                norm_p  = df_tmp[~is_promo].groupby(col_prodotto, observed=True)[val_cols[0]].sum()
-                comb_p  = pd.DataFrame({"Totale": tot_p, "Promo": promo_p, "Normale": norm_p}).fillna(0)
+                tot_pm   = grp_p[_metric_col].sum()
+                promo_pm = df_tmp[is_promo].groupby(col_prodotto, observed=True)[_metric_col].sum()
+                tot_pe   = grp_p[_eur_col].sum() if _eur_col and _eur_col != _metric_col else tot_pm
+                comb_p  = pd.DataFrame({"Totale": tot_pm, "Promo": promo_pm, "Tot€": tot_pe}).fillna(0)
                 comb_p["% Promo"] = (comb_p["Promo"] / comb_p["Totale"].replace(0,1) * 100).round(1)
-                comb_p = comb_p.sort_values("Totale", ascending=False).head(20).reset_index()
+                comb_p = comb_p.sort_values("Tot€", ascending=False).head(20).reset_index()
                 for _, row in comb_p.iterrows():
                     prod = str(row[col_prodotto])[:39]
                     promo_lines.append(
-                        f"{prod:<40} | {_fmt_num(row['Totale']):>12} | {_fmt_num(row['Promo']):>12} | {_fmt_num(row['Normale']):>12} | {row['% Promo']:>7.1f}%"
+                        f"{prod:<40} | {_fmt_num(row['Totale']):>10} | {_fmt_num(row['Promo']):>10} | {row['% Promo']:>11.1f}% | {_fmt_num(row['Tot€']):>12}"
                     )
 
-            # Cross: % promo per ogni PRODOTTO × CLIENTE (top prodotti)
+            # Cross: % promo per ogni PRODOTTO × CLIENTE — metrica Kg (= donut)
             if col_prodotto:
-                promo_lines.append("\nCROSS: % PROMO per PRODOTTO × CLIENTE (risponde a 'chi ha comprato X più in promo?'):")
-                top_p_list = (df_tmp.groupby(col_prodotto, observed=True)[val_cols[0]]
+                promo_lines.append(f"\nCROSS: % PROMO per PRODOTTO × CLIENTE (% su {_metric_label} = UGUALE a donut):")
+                top_p_list = (df_tmp.groupby(col_prodotto, observed=True)[_eur_col or _metric_col]
                                .sum().sort_values(ascending=False).head(40).index.tolist())
                 for prod in top_p_list:
                     df_p = df_tmp[df_tmp[col_prodotto] == prod]
                     is_p_promo = df_p["__tipo__"] == "Promo"
                     cli_grp = df_p.groupby(col_cliente, observed=True)
-                    cli_tot   = cli_grp[val_cols[0]].sum()
-                    cli_promo = df_p[is_p_promo].groupby(col_cliente, observed=True)[val_cols[0]].sum()
-                    cli_df = pd.DataFrame({"Totale": cli_tot, "Promo": cli_promo}).fillna(0)
-                    cli_df["% Promo"] = (cli_df["Promo"] / cli_df["Totale"].replace(0,1) * 100).round(1)
+                    cli_tot_m  = cli_grp[_metric_col].sum()
+                    cli_promo_m = df_p[is_p_promo].groupby(col_cliente, observed=True)[_metric_col].sum()
+                    cli_tot_e  = cli_grp[_eur_col].sum() if _eur_col and _eur_col != _metric_col else cli_tot_m
+                    cli_df = pd.DataFrame({"TotKg": cli_tot_m, "PromoKg": cli_promo_m, "Tot€": cli_tot_e}).fillna(0)
+                    cli_df["% Promo"] = (cli_df["PromoKg"] / cli_df["TotKg"].replace(0,1) * 100).round(1)
                     cli_df = cli_df.sort_values("% Promo", ascending=False).reset_index()
                     if cli_df.empty:
                         continue
                     promo_lines.append(f"\n  {prod}:")
                     for _, row in cli_df.iterrows():
                         promo_lines.append(
-                            f"    {str(row[col_cliente])[:38]}: tot={_fmt_num(row['Totale'])} promo={_fmt_num(row['Promo'])} ({row['% Promo']:.1f}%)"
+                            f"    {str(row[col_cliente])[:38]}: {_fmt_num(row['TotKg'])} Kg tot / {_fmt_num(row['PromoKg'])} Kg promo ({row['% Promo']:.1f}%) / {_fmt_num(row['Tot€'])} €"
                         )
                     if len("\n".join(promo_lines)) > 25000:
                         promo_lines.append("  [...omesso per limite token]")
@@ -2437,20 +2454,33 @@ elif page == "🎁 Analisi Customer Promo":
                             )
                             _plot(fig_p)
 
-                            st.markdown("#### 📉 Dettaglio Metriche")
-                            p_row = promo_stats[promo_stats['Tipo Vendita'] == 'In Promozione']
-                            if not p_row.empty:
-                                p_kg = p_row[col_kg_s].values[0]
-                                p_ct = p_row[col_ct_s].values[0]
-                                p_share = (p_kg / total_kg * 100) if total_kg > 0 else 0
-                                m1, m2, m3 = st.columns(3)
-                                m1.metric("% su Totale (Kg)", f"{p_share:.1f}%")
-                                m2.metric("Kg Promo",         f"{p_kg:,.0f}")
-                                m3.metric("Cartoni Promo",    f"{p_ct:,.0f}")
-                            else:
-                                st.info("Nessuna vendita in promozione trovata con i filtri correnti.")
+                            st.caption("ℹ️ % calcolata su Kg — coerente con AI Data Assistant")
+                        st.markdown("#### 📉 Dettaglio Metriche")
+                        p_row = promo_stats[promo_stats['Tipo Vendita'] == 'In Promozione']
+                        n_row = promo_stats[promo_stats['Tipo Vendita'] == 'Vendita Normale']
+                        if not p_row.empty:
+                            p_kg = p_row[col_kg_s].values[0]
+                            p_ct = p_row[col_ct_s].values[0]
+                            n_kg = n_row[col_kg_s].values[0] if not n_row.empty else 0
+                            p_share = (p_kg / total_kg * 100) if total_kg > 0 else 0
+                            # Aggiungi anche € se disponibile
+                            col_imp_s = 'Importo_Netto_TotRiga'
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric("% Promo (su Kg)", f"{p_share:.1f}%")
+                            m2.metric("Kg Promo", f"{p_kg:,.0f}")
+                            m3.metric("Kg Normale", f"{n_kg:,.0f}")
+                            if col_imp_s in df_s.columns:
+                                promo_mask = df_s['Tipo Vendita'] == 'In Promozione'
+                                eur_promo  = df_s[promo_mask][col_imp_s].sum()
+                                eur_norm   = df_s[~promo_mask][col_imp_s].sum()
+                                eur_tot    = eur_promo + eur_norm
+                                p_share_eur = (eur_promo / eur_tot * 100) if eur_tot > 0 else 0
+                                e1, e2, e3 = st.columns(3)
+                                e1.metric("% Promo (su €)", f"{p_share_eur:.1f}%")
+                                e2.metric("€ Promo", f"{eur_promo:,.0f}")
+                                e3.metric("€ Normale", f"{eur_norm:,.0f}")
                         else:
-                            st.warning("Nessun dato trovato.")
+                            st.info("Nessuna vendita in promozione trovata con i filtri correnti.")
                     else:
                         st.error(f"Colonne mancanti. Colonna Entità rilevata: {col_ent or 'NON TROVATA'}")
                 else:
