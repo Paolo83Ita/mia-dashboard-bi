@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v70.0 - Tabella top10+prodotto pre-calcolata, regole AI anti-invenzione: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v71.0 - Entity selector globale (fix dati multi-entità), legenda colonne For_order_to_invoice: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v70.0",
+    page_title="EITA Analytics Pro v71.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -606,8 +606,16 @@ Quando vedi "1.234.567" significa esattamente 1.234.567, non "circa 1,2 milioni"
 - TOP CLIENTI per PRODOTTO: per ogni prodotto, i 5 clienti che lo hanno comprato di più
 - TOP PRODOTTI per CLIENTE: per ogni cliente, i 5 prodotti più acquistati (top 8 clienti)
 - TREND MENSILE: aggregazione mensile esatta (ultimi 24 mesi)
-- Colonne: Importo_Netto_TotRiga=€ vendite, Peso_Netto_TotRiga=Kg venduti,
-           Invoice amount=€ acquisti fornitore, Kg acquistati=Kg ricevuti
+- Colonne file From_order_to_invoice (vendite):
+    Entity = entità aziendale (es. EITA) — il contesto è già filtrato per entità
+    Decr_Cliente_Fat = nome cliente di fatturazione → usato come CLIENTE
+    Descr_Articolo = descrizione prodotto → usato come PRODOTTO
+    Importo_Netto_TotRiga = fatturato netto € della riga → usato come FATTURATO €
+    Peso_Netto_TotRiga = kg netti della riga → usato come KG VENDUTI
+    Data_Documento = data del documento (fattura/ordine) → usato per PERIODO
+    Sconto7_Promozionali = sconto promo (>0=promo, 99/100=omaggio, 0=normale)
+    Sconto4_Free = sconto free (>0=promo, 99/100=omaggio, 0=normale)
+- Colonne file acquisti: Invoice amount=€ acquisti fornitore, Kg acquistati=Kg ricevuti
 
 ════ REGOLE DI RISPOSTA ════
 1. RISPONDI SEMPRE in modo diretto e assertivo. I dati nel contesto sono affidabili al 100%.
@@ -836,6 +844,29 @@ _COL_CT = 'Qta_Cartoni_Ordinato'   # colonna cartoni
 _COL_AT = 'Descr_Articolo'         # colonna articolo
 _COL_CL = 'Decr_Cliente_Fat'       # colonna cliente fatturazione
 _COL_DT = 'Data_Documento'         # colonna data
+
+# ── Legenda COMPLETA colonne From_order_to_invoice ──────────────────────
+# Fonte: documentazione interna EITA (fornita dall'utente)
+_SALES_COL_LEGEND = {
+    "Entity":                   "Entità aziendale (es. EITA) — FILTRO PRINCIPALE per isolare i dati EITA",
+    "Data_Documento":           "Data del documento (fattura/ordine) — usata per il filtro periodo",
+    "Numero_Documento":         "Numero progressivo del documento",
+    "Tipo_Documento":           "Tipo documento (es. Fattura, Nota Credito)",
+    "Codice_Cliente_Fat":       "Codice identificativo del cliente di fatturazione",
+    "Decr_Cliente_Fat":         "Nome/ragione sociale del cliente di fatturazione (colonna CLIENTE)",
+    "Codice_Cliente_Dest":      "Codice identificativo del cliente di destinazione merce",
+    "Descr_Cliente_Dest":       "Nome/ragione sociale del cliente destinatario merce",
+    "Codice_Articolo":          "Codice prodotto interno",
+    "Descr_Articolo":           "Descrizione prodotto (colonna PRODOTTO per analisi)",
+    "Qta_Cartoni_Ordinato":     "Quantità in cartoni ordinata",
+    "Peso_Netto_TotRiga":       "Peso netto totale della riga in kg (METRICA PRINCIPALE per analisi Kg)",
+    "Importo_Netto_TotRiga":    "Importo netto totale della riga in € (METRICA PRINCIPALE per fatturato)",
+    "Prezzo_Netto":             "Prezzo netto unitario del prodotto (€/unità)",
+    "Sconto7_Promozionali":     "Sconto promozionale: >0 = vendita promo; 99/100 = omaggio; 0 = normale",
+    "Sconto4_Free":             "Sconto free (omaggio): >0 = vendita promo; 99/100 = omaggio; 0 = normale",
+    "Numero_Pallet":            "Numero pallet (logistica, non usato per analisi commerciali)",
+    "COMPANY":                  "Campo tecnico ERP — non usato per analisi (usa Entity invece)",
+}
 
 
 def _classifica_vendita(df: "pd.DataFrame") -> "pd.Series":
@@ -1835,6 +1866,10 @@ if drive_error:
 _df_sales_global = None   # df vendite filtrato+classificato, condiviso da AI e donut
 _periodo_g = f" | Periodo: {G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}"
 
+# ── CARICAMENTO PRE-RENDER del file vendite (cached) ─────────────────────
+# Necessario per: (a) selettore Entity globale, (b) contesto AI corretto
+_df_proc_pre = None
+_entity_col_pre = None
 if files:
     _sales_key_pre = next(
         (f for f in files if "from_order_to_invoice" in f.get('name','').lower()), None
@@ -1845,21 +1880,48 @@ if files:
             if _df_raw_pre is not None:
                 _df_proc_pre = smart_analyze_and_clean(_df_raw_pre, "Sales")
                 if _df_proc_pre is not None:
-                    _df_sales_global = _filtra_vendite_periodo(
-                        _df_proc_pre, G_START, G_END, entity="EITA"
+                    _entity_col_pre = next(
+                        (c for c in ['Entity', 'Società', 'Company', 'Division', 'Azienda']
+                         if c in _df_proc_pre.columns), None
                     )
-                    if _df_sales_global.empty:
-                        # Fallback: nessun filtro entity
-                        _df_sales_global = _filtra_vendite_periodo(
-                            _df_proc_pre, G_START, G_END, entity=None
-                        )
         except Exception:
-            _df_sales_global = None
+            _df_proc_pre = None
+
+# ── SELETTORE ENTITY GLOBALE ─────────────────────────────────────────────
+# Posizionato qui (prima del pre-load AI) in modo che filtraggio e contesto AI
+# usino SEMPRE la stessa entità che l'utente ha selezionato.
+# Senza questo selettore globale, il pre-load filtrava "EITA" hardcoded
+# e se il campo Entity aveva valori diversi, scattava il fallback su tutti i dati.
+_g_entity = st.session_state.get("global_entity", "EITA")
+if _df_proc_pre is not None and _entity_col_pre:
+    _all_entities = sorted(_df_proc_pre[_entity_col_pre].dropna().astype(str).unique())
+    if _all_entities:
+        _def_ent_idx = _all_entities.index(_g_entity) if _g_entity in _all_entities else 0
+        _g_entity = st.sidebar.selectbox(
+            "🏢 Entità / Società", _all_entities, index=_def_ent_idx,
+            key="global_entity_select"
+        )
+        st.session_state["global_entity"] = _g_entity
+    else:
+        st.sidebar.caption("⚠️ Nessuna entità trovata nel file vendite")
+else:
+    # File non ancora caricato: usa valore salvato
+    st.sidebar.caption(f"🏢 Entità: {_g_entity}")
+
+# ── FILTRO CON ENTITY SELEZIONATA (no fallback a tutti i dati) ───────────
+if _df_proc_pre is not None:
+    _df_sales_global = _filtra_vendite_periodo(
+        _df_proc_pre, G_START, G_END, entity=_g_entity
+    )
+    if _df_sales_global.empty:
+        # Entità non trovata — segnala ma non espande a tutti i dati
+        st.sidebar.warning(f"⚠️ Nessun dato per entità '{_g_entity}' nel periodo selezionato.")
+        _df_sales_global = None
 
 # Aggiorna il contesto AI con i dati corretti DEL RENDER CORRENTE
 if _df_sales_global is not None and not _df_sales_global.empty:
     st.session_state["ai_context_df"]    = _df_sales_global
-    st.session_state["ai_context_label"] = f"Vendite EITA{_periodo_g}"
+    st.session_state["ai_context_label"] = f"Vendite {_g_entity}{_periodo_g}"
 
 # AI Assistant — ora legge il contesto AGGIORNATO
 _ai_ctx_df    = st.session_state.get("ai_context_df",    None)
@@ -1908,10 +1970,9 @@ if page == "📊 Vendite & Fatturazione":
         df_global = df_processed.copy()
         sel_ent   = None
 
-        if col_entity:
-            ents    = sorted(df_global[col_entity].astype(str).unique())
-            idx_e   = ents.index('EITA') if 'EITA' in ents else 0
-            sel_ent = st.sidebar.selectbox("Società / Entità", ents, index=idx_e)
+        # Entity filtrata dal selettore globale (_g_entity), non più da widget locale
+        sel_ent = _g_entity
+        if col_entity and col_entity in df_global.columns:
             df_global = df_global[df_global[col_entity].astype(str) == sel_ent]
 
         if col_data and pd.api.types.is_datetime64_any_dtype(df_global[col_data]):
@@ -1993,9 +2054,9 @@ if page == "📊 Vendite & Fatturazione":
         except Exception:
             _periodo_sales = _periodo_g
         # Solo se df_global è diverso da _df_sales_global (filtri extra applicati)
-        if _df_sales_global is None or sel_ent not in ('EITA', None, ''):
-            st.session_state["ai_context_df"]    = df_global
-        st.session_state["ai_context_label"] = f"Vendite {sel_ent or 'Global'}{_periodo_sales}"
+        # Contesto AI già aggiornato nel blocco globale con _df_sales_global.
+        # Aggiorna solo la label con il periodo corrente.
+        st.session_state["ai_context_label"] = f"Vendite {_g_entity}{_periodo_sales}"
 
         if not df_global.empty:
             tot_euro    = df_global[col_euro].sum()
