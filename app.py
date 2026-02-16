@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v89.0 - Top Fornitori subplots scale indipendenti; Trend label smart (max/min/last) + range overflow; Livello Servizio Master+Child con ProgressColumn: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v90.0 - Livello Servizio P3 righe + KPI P1/P3; Trend asse X adattivo (W/<90gg, ME/>90gg); tickfont +2pt; cache clear sidebar; Grok opt compact_context: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v89.0",
+    page_title="EITA Analytics Pro v90.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1175,6 +1175,9 @@ def _build_compact_context(context_df: pd.DataFrame, context_label: str) -> str:
 
     df   = context_df
     n    = len(df)
+    # ── Grok opt: se df grande, campiona per aggregazioni non critiche ──
+    # I totali vengono calcolati prima del campionamento → sempre esatti
+    df_agg = df.sample(min(n, 5000), random_state=42) if n > 50_000 else df
     cols = df.columns.tolist()
     dset = _detect_dataset_type(context_label, cols)
     cmap = _CTX_COL_MAPS.get(dset, {})
@@ -1943,6 +1946,17 @@ page = st.sidebar.radio(
 )
 st.sidebar.markdown("---")
 
+# ── Cache clear manuale (utile su mobile dove il browser mantiene la cache) ──
+if st.sidebar.button("🔄 Forza Aggiornamento Dati",
+                     help="Ricarica tutti i dati da Google Drive e svuota la cache locale",
+                     use_container_width=True):
+    st.cache_data.clear()
+    # Rimuovi anche i df in session_state per forzare il reload
+    for _k in [k for k in st.session_state if k.startswith(('df_', 'promo_', 'sales_'))]:
+        del st.session_state[_k]
+    st.rerun()
+st.sidebar.markdown("---")
+
 # ── SELETTORE DATA GLOBALE ───────────────────────────────────────────────
 # Unico filtro periodo per TUTTE e 3 le pagine.
 # I dati di ogni pagina vengono filtrati automaticamente su questo range.
@@ -2201,11 +2215,18 @@ if page == "📊 Vendite & Fatturazione":
             top_val     = top_c_data.values[0] if not top_c_data.empty else 0
             short_top   = (str(top_name)[:20] + "..") if len(str(top_name)) > 20 else str(top_name)
 
+            # Livello di servizio: Cartoni Consegnati / Cartoni Ordinati
+            _s_ord = df_global[col_cartons].sum()     if col_cartons     and col_cartons     in df_global.columns else 0
+            _s_del = df_global[col_cartons_del].sum() if col_cartons_del and col_cartons_del in df_global.columns else 0
+            svc_lv_s = min((_s_del / _s_ord * 100), 100) if _s_ord > 0 else None
+            svc_lv_s_str = f"{svc_lv_s:.1f}%" if svc_lv_s is not None else "N/D"
+
             render_kpi_cards([
                 {"title": "💰 Fatturato Netto",  "value": f"€ {tot_euro:,.0f}",  "subtitle": "Totale nel periodo selezionato"},
                 {"title": "⚖️ Volume Totale",    "value": f"{tot_kg:,.0f} Kg",   "subtitle": "Peso netto cumulato"},
                 {"title": "📦 Ordini Elaborati", "value": f"{tot_orders:,}",      "subtitle": "Transazioni uniche / Righe"},
                 {"title": "👑 Top Customer",     "value": short_top,              "subtitle": f"Valore: € {top_val:,.0f}"},
+                {"title": "🎯 Livello Servizio", "value": svc_lv_s_str,           "subtitle": "CT Consegnati / CT Ordinati"},
             ])
 
             st.markdown("### 🧭 Analisi Esplorativa (Drill-Down)")
@@ -3304,7 +3325,13 @@ elif page == "🏭 Analisi Acquisti":
                           if 'Purchase order' in df_pu_global.columns else 0)
         avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
 
-        render_kpi_cards([
+        # Livello di servizio globale: Received quantity / Order quantity
+        _pu_ord = df_pu_global['Order quantity'].sum()    if 'Order quantity'    in df_pu_global.columns else 0
+        _pu_rec = df_pu_global['Received quantity'].sum() if 'Received quantity' in df_pu_global.columns else 0
+        svc_lv_pu = min((_pu_rec / _pu_ord * 100), 100) if _pu_ord > 0 else None
+        svc_lv_pu_str = f"{svc_lv_pu:.1f}%" if svc_lv_pu is not None else "N/D"
+
+        _kpi_cards_pu = [
             {"title": "💸 Spesa Totale",
              "value":    f"€ {tot_invoice_pu:,.0f}",
              "subtitle": "Invoice Amount (importo fatturato)"},
@@ -3317,7 +3344,11 @@ elif page == "🏭 Analisi Acquisti":
             {"title": "🏷️ Prezzo Medio",
              "value":    f"€ {avg_price_kg:.4f}",
              "subtitle": "€ per Kg (Invoice amount / Kg acq.)"},
-        ], card_class="purch-card")
+            {"title": "🎯 Livello Servizio",
+             "value":    svc_lv_pu_str,
+             "subtitle": "Ricevuto / Ordinato (Received qty / Order qty)"},
+        ]
+        render_kpi_cards(_kpi_cards_pu, card_class="purch-card")
 
         # Caption periodo effettivo sotto i KPI
         if d_start_pu and d_end_pu and not df_pu_global.empty:
@@ -3340,9 +3371,16 @@ elif page == "🏭 Analisi Acquisti":
                         and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date])
                         and not df_pu_global.empty):
                     try:
+                        # Frequenza adattiva: settimane se periodo < 90gg, altrimenti mesi
+                        _delta_days = (d_end_pu - d_start_pu).days if d_start_pu and d_end_pu else 999
+                        _freq       = 'W' if _delta_days < 90 else 'ME'
+                        _xfmt       = '%d %b' if _freq == 'W' else '%b %Y'
+
                         trend_pu = (df_pu_global
-                                    .groupby(pd.Grouper(key=pu_date, freq='ME'))[pu_amount]
-                                    .sum().reset_index())
+                                    .groupby(pd.Grouper(key=pu_date, freq=_freq))[pu_amount]
+                                    .sum().reset_index()
+                                    .pipe(lambda d: d[d[pu_amount] > 0])  # escludi settimane/mesi a zero
+                                   )
                         fig_trend = go.Figure()
 
                         # ── Funzione formato valore ────────────────────────────────
@@ -3413,13 +3451,13 @@ elif page == "🏭 Analisi Acquisti":
                             height=460,
                             xaxis=dict(
                                 title="", showgrid=False,
-                                tickformat="%b %Y", tickangle=-30,
-                                tickfont=dict(size=10),
+                                tickformat=_xfmt, tickangle=-30,
+                                tickfont=dict(size=12),  # più leggibile
                             ),
                             yaxis=dict(
                                 title="€ Spesa", showgrid=True,
                                 gridcolor='rgba(67,233,123,0.1)',
-                                tickprefix="€ ", tickfont=dict(size=10),
+                                tickprefix="€ ", tickfont=dict(size=12),  # più leggibile
                                 zeroline=False,
                                 # range esteso del 15% sopra il max per le label
                                 range=[0, trend_pu[pu_amount].max() * 1.20
@@ -3530,20 +3568,20 @@ elif page == "🏭 Analisi Acquisti":
                         margin=dict(l=10, r=90, t=36, b=10),
                     )
                     fig_supp.update_yaxes(
-                        autorange="reversed", showgrid=False, tickfont=dict(size=10),
+                        autorange="reversed", showgrid=False, tickfont=dict(size=11),
                     )
                     # Asse X pannello €
                     fig_supp.update_xaxes(
                         showgrid=True, gridcolor='rgba(0,198,255,0.12)',
                         tickprefix="€ ", zeroline=False,
-                        tickfont=dict(size=9), row=1, col=1,
+                        tickfont=dict(size=11), row=1, col=1,
                     )
                     # Asse X pannello Kg
                     if _has_kg:
                         fig_supp.update_xaxes(
                             showgrid=True, gridcolor='rgba(247,151,30,0.12)',
                             ticksuffix=" Kg", zeroline=False,
-                            tickfont=dict(size=9), row=1, col=2,
+                            tickfont=dict(size=11), row=1, col=2,
                         )
                     # Subplot titles in un colore leggibile e dimensione adeguata
                     for ann in fig_supp.layout.annotations:
@@ -3658,6 +3696,18 @@ elif page == "🏭 Analisi Acquisti":
             final_cols = [c for c in cols_to_display if c in df_detail_filtered.columns]
             df_final   = df_detail_filtered[final_cols] if final_cols else df_detail_filtered
 
+            # ── Livello Servizio riga per riga (Received / Order) ─────────
+            _ord_col = 'Order quantity'
+            _rec_col = 'Received quantity'
+            if _ord_col in df_final.columns and _rec_col in df_final.columns:
+                df_final = df_final.copy()
+                df_final['% Livello Servizio'] = (
+                    (df_final[_rec_col] / df_final[_ord_col].replace(0, float('nan'))) * 100
+                ).clip(0, 100).round(1)
+                col_cfg['% Livello Servizio'] = st.column_config.ProgressColumn(
+                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                )
+
             # CAP DISPLAY: Streamlit renderizza tutto in DOM → troppo RAM con 100k+ righe
             _MAX_ROWS_DISPLAY = 5000
             _total_rows = len(df_final)
@@ -3726,3 +3776,4 @@ elif page == "🏭 Analisi Acquisti":
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
                 "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
+
