@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v85.0 - Top Fornitori: subplots side-by-side (€|Kg) no overlap; P1 layout: col_r Esplosione + full-width drill-down; titolo📊 P1; CSS h1 mobile; tabelle full-width: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v86.0 - Top Fornitori grouped (€+Kg per fornitore); Metriche KPI cards IT format; colonna Tipo Promo; footer GDPR; Mostra/Nascondi colonne P1 child + P2 iniziative: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v85.0",
+    page_title="EITA Analytics Pro v86.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2423,8 +2423,21 @@ if page == "📊 Vendite & Fatturazione":
                         f'<div class="detail-section">Dettaglio per: <b>{selected_val}</b></div>',
                         unsafe_allow_html=True
                     )
+                    # ── Mostra / Nascondi Colonne (Child) ────────────────────
+                    _all_child_cols = list(detail_agg.columns)
+                    with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
+                        _show_all_ch = st.checkbox("⭐ Tutte le colonne", value=True, key="child_show_all")
+                        if _show_all_ch:
+                            _child_vis = _all_child_cols
+                        else:
+                            _child_vis = st.multiselect(
+                                "Seleziona colonne:", options=_all_child_cols,
+                                default=_all_child_cols, key="child_cols_select"
+                            )
+                            if not _child_vis:
+                                _child_vis = _all_child_cols
                     st.dataframe(
-                        detail_agg,
+                        detail_agg[[c for c in _child_vis if c in detail_agg.columns]],
                         column_config={
                             secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
                             col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
@@ -2451,6 +2464,16 @@ if page == "📊 Vendite & Fatturazione":
                     file_name=f"Explosion_Full_Report_{datetime.date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
+
+            # ── Footer GDPR ────────────────────────────────────────────────
+            st.markdown("---")
+            st.caption(
+                "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
+                "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
+                "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
+            )
 
 
 # PAGINA 2: CUSTOMER PROMO
@@ -2692,17 +2715,46 @@ elif page == "🏷️ Analisi Customer Promo":
                         # ── Dettaglio Metriche ───────────────────────────────────
                         st.markdown("#### 📉 Dettaglio Metriche")
                         st.caption("ℹ️ % su Kg — stessa logica del contesto AI | Regola: Normale=s7=0 e s4=0, Promo=qualsiasi>0, Omaggio=99/100")
+
+                        def _it(v, dec=0):
+                            """Formato italiano: punto migliaia, virgola decimali."""
+                            if dec == 0:
+                                return f"{int(round(v)):,}".replace(",", ".")
+                            s = f"{v:,.{dec}f}"
+                            p = s.split(".")
+                            return p[0].replace(",", ".") + "," + p[1]
+                        _tipo_cfg = {
+                            'In Promozione': ('🏷️', '#ff6b9d', 'promo-card'),
+                            'Vendita Normale': ('📊', '#00c6ff', ''),
+                            'Omaggio': ('🎁', '#43e97b', 'purch-card'),
+                        }
+                        _metric_cols = st.columns(len([t for t in ['In Promozione','Vendita Normale','Omaggio']
+                                                        if not promo_stats[promo_stats['Tipo']==t].empty]))
+                        _col_idx = 0
                         for tipo in ['In Promozione', 'Vendita Normale', 'Omaggio']:
                             row = promo_stats[promo_stats['Tipo'] == tipo]
                             if row.empty:
                                 continue
-                            kg_val   = row['Kg'].values[0]
-                            pct      = (kg_val / total_kg * 100) if total_kg > 0 else 0
-                            eur_val  = df_s[df_s['__tipo__'] == tipo][_COL_EU].sum() if _COL_EU in df_s.columns else 0
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric(f"{tipo} %",   f"{pct:.1f}%")
-                            c2.metric(f"Kg",          f"{kg_val:,.0f}")
-                            c3.metric(f"€",           f"{eur_val:,.0f}")
+                            kg_val  = row['Kg'].values[0]
+                            pct     = (kg_val / total_kg * 100) if total_kg > 0 else 0
+                            eur_val = df_s[df_s['__tipo__'] == tipo][_COL_EU].sum() if _COL_EU in df_s.columns else 0
+                            icon, color, _ = _tipo_cfg.get(tipo, ('📦', '#aaa', ''))
+                            with _metric_cols[_col_idx]:
+                                st.markdown(
+                                    f"""<div style="background:rgba(130,150,200,0.08);
+                                        border-left:5px solid {color};border-radius:14px;
+                                        padding:1rem 1.2rem;margin-bottom:0.5rem;">
+                                      <div style="font-size:0.75rem;font-weight:700;
+                                           text-transform:uppercase;letter-spacing:1px;opacity:0.65;">
+                                        {icon} {tipo}</div>
+                                      <div style="font-size:1.6rem;font-weight:800;color:{color};
+                                           margin:0.3rem 0 0.1rem;">{_it(pct,1)}%</div>
+                                      <div style="font-size:0.85rem;opacity:0.8;">
+                                        {_it(kg_val)} Kg &nbsp;|&nbsp; € {_it(eur_val)}</div>
+                                    </div>""",
+                                    unsafe_allow_html=True
+                                )
+                            _col_idx += 1
                 else:
                     st.info("File Vendite non trovato o nessun dato nel periodo selezionato.")
 
@@ -2906,7 +2958,8 @@ elif page == "🏷️ Analisi Customer Promo":
                 promo_id_col   = guesses_p.get('promo_id')
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
                 cols_to_show   = [c for c in [promo_id_col, promo_desc_col, p_cust, p_prod,
-                                               p_start, p_week, p_qty_f, p_qty_a, 'Sconto promo']
+                                               p_type, p_start, p_week, p_qty_f, p_qty_a,
+                                               'Sconto promo']
                                    if c and c in df_display.columns]
                 df_display_sorted = (
                     df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
@@ -2916,6 +2969,22 @@ elif page == "🏷️ Analisi Customer Promo":
 
             if 'promo_detail_df' in st.session_state:
                 df_p_show = st.session_state['promo_detail_df']
+
+                # ── Mostra / Nascondi Colonne ─────────────────────────────
+                _all_p_cols = list(df_p_show.columns)
+                with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
+                    _show_all_p = st.checkbox("⭐ Tutte le colonne", value=False, key="pd_show_all")
+                    if _show_all_p:
+                        _p_cols_vis = _all_p_cols
+                    else:
+                        _p_cols_vis = st.multiselect(
+                            "Seleziona colonne:", options=_all_p_cols,
+                            default=_all_p_cols, key="pd_cols_select"
+                        )
+                        if not _p_cols_vis:
+                            _p_cols_vis = _all_p_cols
+                df_p_show = df_p_show[[c for c in _p_cols_vis if c in df_p_show.columns]]
+
                 st.dataframe(
                     df_p_show,
                     column_config={
@@ -2935,6 +3004,16 @@ elif page == "🏷️ Analisi Customer Promo":
         else:
             st.warning("Nessuna promozione trovata per i filtri selezionati.")
 
+
+
+            # ── Footer GDPR ────────────────────────────────────────────────
+            st.markdown("---")
+            st.caption(
+                "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
+                "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
+                "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
+            )
 
 # ==========================================================================
 # PAGINA 3: ANALISI ACQUISTI
@@ -3292,82 +3371,72 @@ elif page == "🏭 Analisi Acquisti":
                         for v in norm_s
                     ]
 
-                    # ── Top Fornitori: 2 pannelli side-by-side (€ | Kg) ──────────
-                    # make_subplots con shared_yaxes elimina qualsiasi sovrapposizione
-                    from plotly.subplots import make_subplots
+                    # ── Top Fornitori: barre raggruppate — € sopra, Kg sotto per fornitore ──
+                    # barmode='group' + orientation='h' → per ogni fornitore 2 barre verticali
                     _has_kg = pu_kg in top_supp_full.columns
+                    fig_supp = go.Figure()
 
-                    if _has_kg:
-                        fig_supp = make_subplots(
-                            rows=1, cols=2,
-                            shared_yaxes=True,
-                            column_widths=[0.6, 0.4],
-                            horizontal_spacing=0.04,
-                            subplot_titles=["💸 Spesa (€)", "⚖️ Volume (Kg)"],
-                        )
-                    else:
-                        fig_supp = make_subplots(rows=1, cols=1)
-
-                    # Pannello SINISTRA — Spesa €
+                    # Barra 1 — Spesa € (colori sfumati per valore)
                     fig_supp.add_trace(go.Bar(
                         y=top_supp_full[pu_supp],
                         x=top_supp_full[pu_amount],
                         orientation='h',
                         name='💸 Spesa €',
                         marker=dict(color=bar_cols_s,
-                                    line=dict(color='rgba(255,255,255,0.4)', width=0.8)),
+                                    line=dict(color='rgba(255,255,255,0.35)', width=0.8)),
                         text=top_supp_full[pu_amount].apply(
                             lambda v: f"€ {v/1e6:.2f}M" if v >= 1e6
                                       else (f"€ {v/1e3:.0f}K" if v >= 1000 else f"€ {v:.0f}")
                         ),
-                        textposition='outside',
-                        textfont=dict(size=11, family='Arial Bold'),
+                        textposition='inside', insidetextanchor='end',
+                        textfont=dict(size=11, color='white', family='Arial Bold'),
                         hovertemplate="<b>%{y}</b><br>💸 € %{x:,.0f}<extra></extra>",
-                        cliponaxis=False,
-                    ), row=1, col=1)
+                    ))
 
-                    # Pannello DESTRA — Volume Kg
+                    # Barra 2 — Volume Kg (arancio sfumato)
                     if _has_kg:
                         _kg_norm   = top_supp_full[pu_kg] / (top_supp_full[pu_kg].max() + 1e-9)
-                        _kg_colors = [f"rgba(247,{int(151+60*v)},{int(30+80*v)},0.85)"
+                        _kg_colors = [f"rgba(247,{int(151+55*v)},{int(30+70*v)},0.82)"
                                       for v in _kg_norm]
                         fig_supp.add_trace(go.Bar(
                             y=top_supp_full[pu_supp],
                             x=top_supp_full[pu_kg],
                             orientation='h',
-                            name='⚖️ Kg',
+                            name='⚖️ Volume Kg',
                             marker=dict(color=_kg_colors,
-                                        line=dict(color='rgba(255,255,255,0.4)', width=0.8)),
+                                        line=dict(color='rgba(255,255,255,0.35)', width=0.8)),
                             text=top_supp_full[pu_kg].apply(
-                                lambda v: f"{v/1e3:.0f}K" if v >= 1000 else f"{v:.0f}"
+                                lambda v: f"{v/1e3:.0f}K Kg" if v >= 1000 else f"{v:.0f} Kg"
                             ),
-                            textposition='outside',
-                            textfont=dict(size=11, family='Arial'),
+                            textposition='inside', insidetextanchor='end',
+                            textfont=dict(size=11, color='white', family='Arial'),
                             hovertemplate="<b>%{y}</b><br>⚖️ %{x:,.0f} Kg<extra></extra>",
-                            cliponaxis=False,
-                        ), row=1, col=2)
+                        ))
 
-                    _h_supp = max(320, n_sup * 52)
+                    # Altezza dinamica: 2 barre per fornitore se Kg presente
+                    _rows_per_sup = 2 if _has_kg else 1
+                    _h_supp = max(320, n_sup * 44 * _rows_per_sup)
                     fig_supp.update_layout(
                         height=_h_supp,
-                        showlegend=False,
+                        barmode='group',      # barre affiancate verticalmente per ogni fornitore
+                        bargap=0.30,          # spazio tra gruppi (fornitori)
+                        bargroupgap=0.06,     # spazio tra le 2 barre dello stesso gruppo
+                        showlegend=True,
+                        legend=dict(orientation='h', x=0, y=1.02,
+                                    font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=10, r=70, t=36, b=10),
-                        barmode='relative',
+                        margin=dict(l=10, r=20, t=40, b=10),
+                        xaxis=dict(
+                            showgrid=True, gridcolor='rgba(130,150,200,0.15)',
+                            zeroline=False,
+                            tickformat=",.0f",
+                        ),
+                        yaxis=dict(
+                            autorange="reversed", showgrid=False,
+                            tickfont=dict(size=10),
+                        ),
                     )
-                    fig_supp.update_yaxes(
-                        autorange="reversed", showgrid=False, tickfont=dict(size=10),
-                    )
-                    fig_supp.update_xaxes(
-                        showgrid=True, gridcolor='rgba(0,198,255,0.12)',
-                        tickprefix="€ ", zeroline=False, row=1, col=1
-                    )
-                    if _has_kg:
-                        fig_supp.update_xaxes(
-                            showgrid=True, gridcolor='rgba(247,151,30,0.12)',
-                            ticksuffix=" Kg", zeroline=False, row=1, col=2
-                        )
 
                     _plot(fig_supp)
                     st.caption(f"📅 Data: **{pu_date}**")
@@ -3535,4 +3604,13 @@ elif page == "🏭 Analisi Acquisti":
                 data=convert_df_to_excel(df_final),
                 file_name=f"Report_Acquisti_{datetime.date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            # ── Footer GDPR ────────────────────────────────────────────────
+            st.markdown("---")
+            st.caption(
+                "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
+                "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
+                "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
             )
