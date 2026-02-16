@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v86.0 - Top Fornitori grouped (€+Kg per fornitore); Metriche KPI cards IT format; colonna Tipo Promo; footer GDPR; Mostra/Nascondi colonne P1 child + P2 iniziative: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v87.0 - Top Fornitori legenda sotto (no overlap); Metriche+Tabella full-width P2; Mostra/Nascondi tutte colonne sorgente P1+P2; GDPR S.p.A.; fix adattamento schermo: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v86.0",
+    page_title="EITA Analytics Pro v87.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2424,28 +2424,55 @@ if page == "📊 Vendite & Fatturazione":
                         unsafe_allow_html=True
                     )
                     # ── Mostra / Nascondi Colonne (Child) ────────────────────
-                    _all_child_cols = list(detail_agg.columns)
+                    # Opzioni: tutte le colonne del file sorgente (detail_df)
+                    # Preset:  colonne aggregate (secondary, CT, Kg, €, ratios)
+                    _agg_default  = list(detail_agg.columns)
+                    _src_all_cols = [c for c in detail_df.columns
+                                     if c not in (primary_col,)]  # escludi solo la col di filtro
                     with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
-                        _show_all_ch = st.checkbox("⭐ Tutte le colonne", value=True, key="child_show_all")
-                        if _show_all_ch:
-                            _child_vis = _all_child_cols
+                        _view_mode = st.radio(
+                            "Modalità:", ["📊 Aggregata", "📄 Righe sorgente"],
+                            horizontal=True, key="child_view_mode"
+                        )
+                        if _view_mode == "📊 Aggregata":
+                            _show_all_ch = st.checkbox("⭐ Tutte le colonne aggregate",
+                                                        value=True, key="child_show_all")
+                            if _show_all_ch:
+                                _child_vis = _agg_default
+                            else:
+                                _child_vis = st.multiselect(
+                                    "Seleziona colonne:", options=_agg_default,
+                                    default=_agg_default, key="child_cols_select"
+                                ) or _agg_default
                         else:
-                            _child_vis = st.multiselect(
-                                "Seleziona colonne:", options=_all_child_cols,
-                                default=_all_child_cols, key="child_cols_select"
-                            )
-                            if not _child_vis:
-                                _child_vis = _all_child_cols
-                    st.dataframe(
-                        detail_agg[[c for c in _child_vis if c in detail_agg.columns]],
-                        column_config={
-                            secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
-                            col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
-                            col_kg:              st.column_config.NumberColumn("Kg",     format="%.0f"),
-                            col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
-                            'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
-                            'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
-                        }, hide_index=True, use_container_width=True)
+                            _show_all_src = st.checkbox("⭐ Tutte le colonne sorgente",
+                                                         value=False, key="child_src_all")
+                            if _show_all_src:
+                                _child_src_vis = _src_all_cols
+                            else:
+                                _child_src_vis = st.multiselect(
+                                    "Seleziona colonne sorgente:", options=_src_all_cols,
+                                    default=[c for c in [secondary_col, col_cartons,
+                                                          col_kg, col_euro] if c in _src_all_cols],
+                                    key="child_src_select"
+                                ) or _src_all_cols
+
+                    if _view_mode == "📊 Aggregata":
+                        st.dataframe(
+                            detail_agg[[c for c in _child_vis if c in detail_agg.columns]],
+                            column_config={
+                                secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
+                                col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
+                                col_kg:              st.column_config.NumberColumn("Kg",     format="%.0f"),
+                                col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
+                                'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
+                                'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
+                            }, hide_index=True, use_container_width=True)
+                    else:
+                        st.dataframe(
+                            detail_df[[c for c in _child_src_vis if c in detail_df.columns]]
+                            .reset_index(drop=True),
+                            hide_index=True, use_container_width=True)
 
                 full_flat = (
                     df_tree_raw
@@ -2472,7 +2499,7 @@ if page == "📊 Vendite & Fatturazione":
                 "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
                 "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
-                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
 
 
@@ -2712,150 +2739,9 @@ elif page == "🏷️ Analisi Customer Promo":
                         _plot(fig_p)
                         st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
-                        # ── Dettaglio Metriche ───────────────────────────────────
-                        st.markdown("#### 📉 Dettaglio Metriche")
-                        st.caption("ℹ️ % su Kg — stessa logica del contesto AI | Regola: Normale=s7=0 e s4=0, Promo=qualsiasi>0, Omaggio=99/100")
 
-                        def _it(v, dec=0):
-                            """Formato italiano: punto migliaia, virgola decimali."""
-                            if dec == 0:
-                                return f"{int(round(v)):,}".replace(",", ".")
-                            s = f"{v:,.{dec}f}"
-                            p = s.split(".")
-                            return p[0].replace(",", ".") + "," + p[1]
-                        _tipo_cfg = {
-                            'In Promozione': ('🏷️', '#ff6b9d', 'promo-card'),
-                            'Vendita Normale': ('📊', '#00c6ff', ''),
-                            'Omaggio': ('🎁', '#43e97b', 'purch-card'),
-                        }
-                        _metric_cols = st.columns(len([t for t in ['In Promozione','Vendita Normale','Omaggio']
-                                                        if not promo_stats[promo_stats['Tipo']==t].empty]))
-                        _col_idx = 0
-                        for tipo in ['In Promozione', 'Vendita Normale', 'Omaggio']:
-                            row = promo_stats[promo_stats['Tipo'] == tipo]
-                            if row.empty:
-                                continue
-                            kg_val  = row['Kg'].values[0]
-                            pct     = (kg_val / total_kg * 100) if total_kg > 0 else 0
-                            eur_val = df_s[df_s['__tipo__'] == tipo][_COL_EU].sum() if _COL_EU in df_s.columns else 0
-                            icon, color, _ = _tipo_cfg.get(tipo, ('📦', '#aaa', ''))
-                            with _metric_cols[_col_idx]:
-                                st.markdown(
-                                    f"""<div style="background:rgba(130,150,200,0.08);
-                                        border-left:5px solid {color};border-radius:14px;
-                                        padding:1rem 1.2rem;margin-bottom:0.5rem;">
-                                      <div style="font-size:0.75rem;font-weight:700;
-                                           text-transform:uppercase;letter-spacing:1px;opacity:0.65;">
-                                        {icon} {tipo}</div>
-                                      <div style="font-size:1.6rem;font-weight:800;color:{color};
-                                           margin:0.3rem 0 0.1rem;">{_it(pct,1)}%</div>
-                                      <div style="font-size:0.85rem;opacity:0.8;">
-                                        {_it(kg_val)} Kg &nbsp;|&nbsp; € {_it(eur_val)}</div>
-                                    </div>""",
-                                    unsafe_allow_html=True
-                                )
-                            _col_idx += 1
                 else:
                     st.info("File Vendite non trovato o nessun dato nel periodo selezionato.")
-
-                # ── TABELLA DETTAGLIO sotto il grafico ───────────────────────────
-                if _df_vendite is not None and not _df_vendite.empty:
-                    st.markdown("---")
-                    st.markdown("#### 📋 Dettaglio Vendite Promo / Normale")
-                    st.caption(
-                        "Tabella aggregata per Articolo × Cliente con % promo e % normale su Kg. "
-                        "Filtri applicati: stessi del grafico sopra."
-                    )
-
-                    # Usa df_s (già filtrato per art/cli dal form sopra)
-                    _df_tbl = df_s.copy() if '_f_art' in dir() or '_f_cli' in dir() else _df_vendite.copy()
-                    if _f_art and _COL_AT in _df_tbl.columns:
-                        _df_tbl = _df_tbl[_df_tbl[_COL_AT].astype(str).isin(_f_art)]
-                    if _f_cli and _COL_CL in _df_tbl.columns:
-                        _df_tbl = _df_tbl[_df_tbl[_COL_CL].astype(str).isin(_f_cli)]
-
-                    _has_tbl_cols = all(c in _df_tbl.columns for c in [_COL_AT, _COL_CL, _COL_KG])
-                    if _has_tbl_cols:
-                        # Aggregazione per Articolo × Cliente con breakdown per tipo
-                        _grp_cols = [_COL_AT, _COL_CL]
-                        _agg_base = (
-                            _df_tbl.groupby(_grp_cols + ['__tipo__'], observed=True)[[_COL_KG, _COL_EU, _COL_CT]]
-                            .sum(numeric_only=True)
-                            .reset_index()
-                        )
-                        # Pivot: una riga per Articolo×Cliente con colonne per tipo
-                        _pivot_kg = _agg_base.pivot_table(
-                            index=_grp_cols, columns='__tipo__', values=_COL_KG, aggfunc='sum', fill_value=0
-                        ).reset_index()
-                        _pivot_kg.columns = [c if isinstance(c, str) else f"Kg_{c}" for c in _pivot_kg.columns]
-
-                        # Totali per riga
-                        _tipo_cols_kg = [c for c in _pivot_kg.columns if c.startswith('Kg_') or c in ['In Promozione', 'Vendita Normale', 'Omaggio']]
-                        # Rinomina colonne pivot se non hanno già il prefisso
-                        _rename_map = {}
-                        for c in _pivot_kg.columns:
-                            if c in ('In Promozione', 'Vendita Normale', 'Omaggio'):
-                                _rename_map[c] = f'Kg_{c}'
-                        if _rename_map:
-                            _pivot_kg = _pivot_kg.rename(columns=_rename_map)
-
-                        _kg_promo   = _pivot_kg.get('Kg_In Promozione',   pd.Series(0, index=_pivot_kg.index))
-                        _kg_normale = _pivot_kg.get('Kg_Vendita Normale',  pd.Series(0, index=_pivot_kg.index))
-                        _kg_omaggio = _pivot_kg.get('Kg_Omaggio',          pd.Series(0, index=_pivot_kg.index))
-                        _kg_tot     = _kg_promo + _kg_normale + _kg_omaggio
-
-                        _pivot_kg['Kg Totali']   = _kg_tot
-                        _pivot_kg['Kg Promo']    = _kg_promo
-                        _pivot_kg['Kg Normale']  = _kg_normale
-                        _pivot_kg['Kg Omaggio']  = _kg_omaggio
-                        _pivot_kg['% Promo']     = (_kg_promo   / _kg_tot.replace(0,1) * 100).round(1)
-                        _pivot_kg['% Normale']   = (_kg_normale / _kg_tot.replace(0,1) * 100).round(1)
-                        _pivot_kg['% Omaggio']   = (_kg_omaggio / _kg_tot.replace(0,1) * 100).round(1)
-
-                        # Aggiungi € e CT totali
-                        _eur_ct = (
-                            _df_tbl.groupby(_grp_cols, observed=True)[[_COL_EU, _COL_CT]]
-                            .sum(numeric_only=True)
-                            .reset_index()
-                        )
-                        _pivot_kg = _pivot_kg.merge(_eur_ct, on=_grp_cols, how='left')
-
-                        # Selezione e ordinamento colonne finali
-                        _tbl_cols = [_COL_AT, _COL_CL, _COL_CT, 'Kg Totali', 'Kg Promo', 'Kg Normale',
-                                     'Kg Omaggio', '% Promo', '% Normale', '% Omaggio', _COL_EU]
-                        _tbl_cols = [c for c in _tbl_cols if c in _pivot_kg.columns]
-                        _tbl_final = (
-                            _pivot_kg[_tbl_cols]
-                            .sort_values('Kg Totali', ascending=False)
-                            .reset_index(drop=True)
-                        )
-
-                        st.dataframe(
-                            _tbl_final,
-                            column_config={
-                                _COL_AT:    st.column_config.TextColumn("🏷️ Articolo"),
-                                _COL_CL:    st.column_config.TextColumn("👤 Cliente"),
-                                _COL_CT:    st.column_config.NumberColumn("CT",         format="%d"),
-                                'Kg Totali':  st.column_config.NumberColumn("Kg Tot",   format="%.0f"),
-                                'Kg Promo':   st.column_config.NumberColumn("Kg Promo", format="%.0f"),
-                                'Kg Normale': st.column_config.NumberColumn("Kg Norm",  format="%.0f"),
-                                'Kg Omaggio': st.column_config.NumberColumn("Kg Omag",  format="%.0f"),
-                                '% Promo':    st.column_config.ProgressColumn("% Promo", min_value=0, max_value=100, format="%.1f%%"),
-                                '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
-                                '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
-                                _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
-                            }, hide_index=True, use_container_width=True)
-                        # Download Excel
-                        if not _tbl_final.empty:
-                            st.download_button(
-                                "📥 Scarica tabella Excel",
-                                data=convert_df_to_excel(_tbl_final),
-                                file_name=f"Promo_Detail_{G_START}_{G_END}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="promo_detail_download"
-                            )
-                    else:
-                        st.caption("⚠️ Colonne insufficienti per la tabella dettaglio.")
 
             with col_pr:
                 st.subheader("Top Promozioni (Forecast vs Actual)")
@@ -2926,6 +2812,152 @@ elif page == "🏷️ Analisi Customer Promo":
                     _plot(fig)
                     st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
+
+            # ── Metriche + Tabella — full width (fuori dalle colonne) ──
+            # ── Dettaglio Metriche ───────────────────────────────────
+            st.markdown("#### 📉 Dettaglio Metriche")
+            st.caption("ℹ️ % su Kg — stessa logica del contesto AI | Regola: Normale=s7=0 e s4=0, Promo=qualsiasi>0, Omaggio=99/100")
+
+            def _it(v, dec=0):
+                """Formato italiano: punto migliaia, virgola decimali."""
+                if dec == 0:
+                    return f"{int(round(v)):,}".replace(",", ".")
+                s = f"{v:,.{dec}f}"
+                p = s.split(".")
+                return p[0].replace(",", ".") + "," + p[1]
+            _tipo_cfg = {
+                'In Promozione': ('🏷️', '#ff6b9d', 'promo-card'),
+                'Vendita Normale': ('📊', '#00c6ff', ''),
+                'Omaggio': ('🎁', '#43e97b', 'purch-card'),
+            }
+            _metric_cols = st.columns(len([t for t in ['In Promozione','Vendita Normale','Omaggio']
+                                            if not promo_stats[promo_stats['Tipo']==t].empty]))
+            _col_idx = 0
+            for tipo in ['In Promozione', 'Vendita Normale', 'Omaggio']:
+                row = promo_stats[promo_stats['Tipo'] == tipo]
+                if row.empty:
+                    continue
+                kg_val  = row['Kg'].values[0]
+                pct     = (kg_val / total_kg * 100) if total_kg > 0 else 0
+                eur_val = df_s[df_s['__tipo__'] == tipo][_COL_EU].sum() if _COL_EU in df_s.columns else 0
+                icon, color, _ = _tipo_cfg.get(tipo, ('📦', '#aaa', ''))
+                with _metric_cols[_col_idx]:
+                    st.markdown(
+                        f"""<div style="background:rgba(130,150,200,0.08);
+                            border-left:5px solid {color};border-radius:14px;
+                            padding:1rem 1.2rem;margin-bottom:0.5rem;">
+                          <div style="font-size:0.75rem;font-weight:700;
+                               text-transform:uppercase;letter-spacing:1px;opacity:0.65;">
+                            {icon} {tipo}</div>
+                          <div style="font-size:1.6rem;font-weight:800;color:{color};
+                               margin:0.3rem 0 0.1rem;">{_it(pct,1)}%</div>
+                          <div style="font-size:0.85rem;opacity:0.8;">
+                            {_it(kg_val)} Kg &nbsp;|&nbsp; € {_it(eur_val)}</div>
+                        </div>""",
+                        unsafe_allow_html=True
+                    )
+                _col_idx += 1
+
+            # ── TABELLA DETTAGLIO sotto il grafico ───────────────────────────
+            if _df_vendite is not None and not _df_vendite.empty:
+                st.markdown("---")
+                st.markdown("#### 📋 Dettaglio Vendite Promo / Normale")
+                st.caption(
+                    "Tabella aggregata per Articolo × Cliente con % promo e % normale su Kg. "
+                    "Filtri applicati: stessi del grafico sopra."
+                )
+
+                # Usa df_s (già filtrato per art/cli dal form sopra)
+                _df_tbl = df_s.copy() if '_f_art' in dir() or '_f_cli' in dir() else _df_vendite.copy()
+                if _f_art and _COL_AT in _df_tbl.columns:
+                    _df_tbl = _df_tbl[_df_tbl[_COL_AT].astype(str).isin(_f_art)]
+                if _f_cli and _COL_CL in _df_tbl.columns:
+                    _df_tbl = _df_tbl[_df_tbl[_COL_CL].astype(str).isin(_f_cli)]
+
+                _has_tbl_cols = all(c in _df_tbl.columns for c in [_COL_AT, _COL_CL, _COL_KG])
+                if _has_tbl_cols:
+                    # Aggregazione per Articolo × Cliente con breakdown per tipo
+                    _grp_cols = [_COL_AT, _COL_CL]
+                    _agg_base = (
+                        _df_tbl.groupby(_grp_cols + ['__tipo__'], observed=True)[[_COL_KG, _COL_EU, _COL_CT]]
+                        .sum(numeric_only=True)
+                        .reset_index()
+                    )
+                    # Pivot: una riga per Articolo×Cliente con colonne per tipo
+                    _pivot_kg = _agg_base.pivot_table(
+                        index=_grp_cols, columns='__tipo__', values=_COL_KG, aggfunc='sum', fill_value=0
+                    ).reset_index()
+                    _pivot_kg.columns = [c if isinstance(c, str) else f"Kg_{c}" for c in _pivot_kg.columns]
+
+                    # Totali per riga
+                    _tipo_cols_kg = [c for c in _pivot_kg.columns if c.startswith('Kg_') or c in ['In Promozione', 'Vendita Normale', 'Omaggio']]
+                    # Rinomina colonne pivot se non hanno già il prefisso
+                    _rename_map = {}
+                    for c in _pivot_kg.columns:
+                        if c in ('In Promozione', 'Vendita Normale', 'Omaggio'):
+                            _rename_map[c] = f'Kg_{c}'
+                    if _rename_map:
+                        _pivot_kg = _pivot_kg.rename(columns=_rename_map)
+
+                    _kg_promo   = _pivot_kg.get('Kg_In Promozione',   pd.Series(0, index=_pivot_kg.index))
+                    _kg_normale = _pivot_kg.get('Kg_Vendita Normale',  pd.Series(0, index=_pivot_kg.index))
+                    _kg_omaggio = _pivot_kg.get('Kg_Omaggio',          pd.Series(0, index=_pivot_kg.index))
+                    _kg_tot     = _kg_promo + _kg_normale + _kg_omaggio
+
+                    _pivot_kg['Kg Totali']   = _kg_tot
+                    _pivot_kg['Kg Promo']    = _kg_promo
+                    _pivot_kg['Kg Normale']  = _kg_normale
+                    _pivot_kg['Kg Omaggio']  = _kg_omaggio
+                    _pivot_kg['% Promo']     = (_kg_promo   / _kg_tot.replace(0,1) * 100).round(1)
+                    _pivot_kg['% Normale']   = (_kg_normale / _kg_tot.replace(0,1) * 100).round(1)
+                    _pivot_kg['% Omaggio']   = (_kg_omaggio / _kg_tot.replace(0,1) * 100).round(1)
+
+                    # Aggiungi € e CT totali
+                    _eur_ct = (
+                        _df_tbl.groupby(_grp_cols, observed=True)[[_COL_EU, _COL_CT]]
+                        .sum(numeric_only=True)
+                        .reset_index()
+                    )
+                    _pivot_kg = _pivot_kg.merge(_eur_ct, on=_grp_cols, how='left')
+
+                    # Selezione e ordinamento colonne finali
+                    _tbl_cols = [_COL_AT, _COL_CL, _COL_CT, 'Kg Totali', 'Kg Promo', 'Kg Normale',
+                                 'Kg Omaggio', '% Promo', '% Normale', '% Omaggio', _COL_EU]
+                    _tbl_cols = [c for c in _tbl_cols if c in _pivot_kg.columns]
+                    _tbl_final = (
+                        _pivot_kg[_tbl_cols]
+                        .sort_values('Kg Totali', ascending=False)
+                        .reset_index(drop=True)
+                    )
+
+                    st.dataframe(
+                        _tbl_final,
+                        column_config={
+                            _COL_AT:    st.column_config.TextColumn("🏷️ Articolo"),
+                            _COL_CL:    st.column_config.TextColumn("👤 Cliente"),
+                            _COL_CT:    st.column_config.NumberColumn("CT",         format="%d"),
+                            'Kg Totali':  st.column_config.NumberColumn("Kg Tot",   format="%.0f"),
+                            'Kg Promo':   st.column_config.NumberColumn("Kg Promo", format="%.0f"),
+                            'Kg Normale': st.column_config.NumberColumn("Kg Norm",  format="%.0f"),
+                            'Kg Omaggio': st.column_config.NumberColumn("Kg Omag",  format="%.0f"),
+                            '% Promo':    st.column_config.ProgressColumn("% Promo", min_value=0, max_value=100, format="%.1f%%"),
+                            '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
+                            '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
+                            _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
+                        }, hide_index=True, use_container_width=True)
+                    # Download Excel
+                    if not _tbl_final.empty:
+                        st.download_button(
+                            "📥 Scarica tabella Excel",
+                            data=convert_df_to_excel(_tbl_final),
+                            file_name=f"Promo_Detail_{G_START}_{G_END}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="promo_detail_download"
+                        )
+                else:
+                    st.caption("⚠️ Colonne insufficienti per la tabella dettaglio.")
+
+
             st.subheader("📋 Dettaglio Iniziative Promozionali")
 
             with st.form("promo_detail_form"):
@@ -2957,33 +2989,40 @@ elif page == "🏷️ Analisi Customer Promo":
 
                 promo_id_col   = guesses_p.get('promo_id')
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
-                cols_to_show   = [c for c in [promo_id_col, promo_desc_col, p_cust, p_prod,
+                # Preset colonne di default (le chiave semantiche)
+                _preset_cols   = [c for c in [promo_id_col, promo_desc_col, p_cust, p_prod,
                                                p_type, p_start, p_week, p_qty_f, p_qty_a,
                                                'Sconto promo']
                                    if c and c in df_display.columns]
                 df_display_sorted = (
-                    df_display[cols_to_show].sort_values(by=p_qty_a, ascending=False)
-                    if p_qty_a in df_display.columns else df_display[cols_to_show]
+                    df_display.sort_values(by=p_qty_a, ascending=False)
+                    if p_qty_a in df_display.columns else df_display
                 )
-                st.session_state['promo_detail_df'] = df_display_sorted
+                # Salva sia il df COMPLETO (tutte le colonne) sia il preset
+                st.session_state['promo_detail_df']      = df_display_sorted
+                st.session_state['promo_detail_preset']  = _preset_cols
 
             if 'promo_detail_df' in st.session_state:
-                df_p_show = st.session_state['promo_detail_df']
+                df_p_full  = st.session_state['promo_detail_df']       # tutte le colonne
+                _p_preset  = st.session_state.get('promo_detail_preset',
+                                                   list(df_p_full.columns))
+                _all_p_cols = [c for c in df_p_full.columns]
 
                 # ── Mostra / Nascondi Colonne ─────────────────────────────
-                _all_p_cols = list(df_p_show.columns)
                 with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
                     _show_all_p = st.checkbox("⭐ Tutte le colonne", value=False, key="pd_show_all")
                     if _show_all_p:
                         _p_cols_vis = _all_p_cols
                     else:
                         _p_cols_vis = st.multiselect(
-                            "Seleziona colonne:", options=_all_p_cols,
-                            default=_all_p_cols, key="pd_cols_select"
+                            "Seleziona colonne:",
+                            options=_all_p_cols,
+                            default=[c for c in _p_preset if c in _all_p_cols],
+                            key="pd_cols_select"
                         )
                         if not _p_cols_vis:
-                            _p_cols_vis = _all_p_cols
-                df_p_show = df_p_show[[c for c in _p_cols_vis if c in df_p_show.columns]]
+                            _p_cols_vis = _p_preset if _p_preset else _all_p_cols
+                df_p_show = df_p_full[[c for c in _p_cols_vis if c in df_p_full.columns]]
 
                 st.dataframe(
                     df_p_show,
@@ -3012,7 +3051,7 @@ elif page == "🏷️ Analisi Customer Promo":
                 "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
                 "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
-                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
 
 # ==========================================================================
@@ -3415,22 +3454,26 @@ elif page == "🏭 Analisi Acquisti":
 
                     # Altezza dinamica: 2 barre per fornitore se Kg presente
                     _rows_per_sup = 2 if _has_kg else 1
-                    _h_supp = max(320, n_sup * 44 * _rows_per_sup)
+                    _h_supp = max(340, n_sup * 48 * _rows_per_sup)
                     fig_supp.update_layout(
                         height=_h_supp,
-                        barmode='group',      # barre affiancate verticalmente per ogni fornitore
-                        bargap=0.30,          # spazio tra gruppi (fornitori)
-                        bargroupgap=0.06,     # spazio tra le 2 barre dello stesso gruppo
+                        barmode='group',
+                        bargap=0.28,
+                        bargroupgap=0.05,
                         showlegend=True,
-                        legend=dict(orientation='h', x=0, y=1.02,
-                                    font=dict(size=10), bgcolor='rgba(0,0,0,0)'),
+                        legend=dict(
+                            orientation='h',
+                            x=0.5, xanchor='center',
+                            y=-0.08, yanchor='top',   # SOTTO le barre — no overlap
+                            font=dict(size=10),
+                            bgcolor='rgba(0,0,0,0)',
+                        ),
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=10, r=20, t=40, b=10),
+                        margin=dict(l=10, r=20, t=10, b=50),  # t piccolo, b largo per la legenda
                         xaxis=dict(
                             showgrid=True, gridcolor='rgba(130,150,200,0.15)',
-                            zeroline=False,
-                            tickformat=",.0f",
+                            zeroline=False, tickformat=",.0f",
                         ),
                         yaxis=dict(
                             autorange="reversed", showgrid=False,
@@ -3612,5 +3655,5 @@ elif page == "🏭 Analisi Acquisti":
                 "🔒 **Conformità GDPR** — Questo applicativo tratta i dati esclusivamente per "
                 "finalità aziendali interne, in conformità al Regolamento UE 2016/679 (GDPR). "
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
-                "da quelle dichiarate. Responsabile del trattamento: EITA S.r.l."
+                "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
