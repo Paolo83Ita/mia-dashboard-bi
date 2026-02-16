@@ -3527,3 +3527,4 @@ elif page == "📦 Analisi Acquisti":
                 file_name=f"Report_Acquisti_{datetime.date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
