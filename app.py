@@ -2455,6 +2455,13 @@ if page == "📊 Vendite & Fatturazione":
                             "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
                         ),
                     }, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "📥 Scarica Tabella Master (.xlsx)",
+                    data=convert_df_to_excel(master_df),
+                    file_name=f"Master_{primary_col}_{datetime.date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="btn_dl_master"
+                )
 
                 st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
                 selected_val = st.selectbox(
@@ -2508,8 +2515,9 @@ if page == "📊 Vendite & Fatturazione":
                                 ) or _src_all_cols
 
                     if _view_mode == "📊 Aggregata":
+                        _child_df_shown = detail_agg[[c for c in _child_vis if c in detail_agg.columns]]
                         st.dataframe(
-                            detail_agg[[c for c in _child_vis if c in detail_agg.columns]],
+                            _child_df_shown,
                             column_config={
                                 secondary_col:           st.column_config.TextColumn("Dettaglio (Child)"),
                                 col_cartons:             st.column_config.NumberColumn("CT Ord",  format="%d"),
@@ -2521,11 +2529,28 @@ if page == "📊 Vendite & Fatturazione":
                                     "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
                                 ),
                             }, hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "📥 Scarica Dettaglio (Child) (.xlsx)",
+                            data=convert_df_to_excel(_child_df_shown),
+                            file_name=f"Child_{str(selected_val)[:30]}_{datetime.date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_dl_child_agg"
+                        )
                     else:
-                        st.dataframe(
+                        _child_src_df_shown = (
                             detail_df[[c for c in _child_src_vis if c in detail_df.columns]]
-                            .reset_index(drop=True),
+                            .reset_index(drop=True)
+                        )
+                        st.dataframe(
+                            _child_src_df_shown,
                             hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "📥 Scarica Righe Sorgente (.xlsx)",
+                            data=convert_df_to_excel(_child_src_df_shown),
+                            file_name=f"Sorgente_{str(selected_val)[:30]}_{datetime.date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="btn_dl_child_src"
+                        )
 
                 full_flat = (
                     df_tree_raw
