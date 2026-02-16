@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v88.0 - Top Fornitori etichette outside leggibili; Trend legenda sotto + label grandi; caption data sotto titolo in tutti i grafici: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v89.0 - Top Fornitori subplots scale indipendenti; Trend label smart (max/min/last) + range overflow; Livello Servizio Master+Child con ProgressColumn: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v88.0",
+    page_title="EITA Analytics Pro v89.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -435,15 +435,17 @@ def guess_column_role(df: pd.DataFrame, page_type: str = "Sales") -> dict:
 
     if page_type == "Sales":
         defaults = {'entity': None, 'customer': None, 'product': None,
-                    'euro': None, 'kg': None, 'cartons': None, 'date': None}
+                    'euro': None, 'kg': None, 'cartons': None,
+                    'cartons_del': None, 'date': None}
         rules = {
-            'euro':     ['Importo_Netto_TotRiga'],
-            'kg':       ['Peso_Netto_TotRiga'],
-            'cartons':  ['Qta_Cartoni_Ordinato'],
-            'date':     ['Data_Fattura', 'Data_Ordine', 'Data_Consegna', 'Data_DDT', 'Data_Partenza'],
-            'entity':   ['Entity'],
-            'customer': ['Decr_Cliente_Fat', 'Descr_Cliente_Fat', 'Descr_Cliente_Dest'],
-            'product':  ['Descr_Articolo'],
+            'euro':         ['Importo_Netto_TotRiga'],
+            'kg':           ['Peso_Netto_TotRiga'],
+            'cartons':      ['Qta_Cartoni_Ordinato'],
+            'cartons_del':  ['Qta_Cartoni_Consegnato'],
+            'date':         ['Data_Fattura', 'Data_Ordine', 'Data_Consegna', 'Data_DDT', 'Data_Partenza'],
+            'entity':       ['Entity'],
+            'customer':     ['Decr_Cliente_Fat', 'Descr_Cliente_Fat', 'Descr_Cliente_Dest'],
+            'product':      ['Descr_Articolo'],
         }
     elif page_type == "Promo":
         defaults = {'promo_id': None, 'promo_desc': None, 'customer': None,
@@ -520,6 +522,23 @@ def build_agg_with_ratios(df: pd.DataFrame, group_col: str,
     agg['Valore Medio €/Kg'] = np.where(agg[col_kg] > 0,    agg[col_eur] / agg[col_kg],    0)
     agg['Valore Medio €/CT'] = np.where(agg[col_ct] > 0,    agg[col_eur] / agg[col_ct],    0)
     return agg
+
+
+def _add_service_level(agg: pd.DataFrame, df_src: pd.DataFrame,
+                        group_col: str, col_ord: str, col_del: str) -> pd.DataFrame:
+    """Aggiunge colonna '% Livello Servizio' = Consegnato/Ordinato × 100.
+       Restituisce il df invariato se le colonne non esistono."""
+    if col_del is None or col_del not in df_src.columns or col_ord not in df_src.columns:
+        return agg
+    svc = (df_src.groupby(group_col)[[col_ord, col_del]]
+                 .sum(numeric_only=True)
+                 .reset_index())
+    svc['% Livello Servizio'] = np.where(
+        svc[col_ord] > 0,
+        (svc[col_del] / svc[col_ord] * 100).clip(0, 100),
+        np.nan
+    )
+    return agg.merge(svc[[group_col, '% Livello Servizio']], on=group_col, how='left')
 
 
 # OTTIMIZZAZIONE: helper per HTML KPI card grid
@@ -2072,13 +2091,14 @@ if page == "📊 Vendite & Fatturazione":
         all_cols = df_processed.columns.tolist()
 
         with st.sidebar.expander("⚙️ Mappatura Colonne", expanded=False):
-            col_entity   = st.selectbox("Entità",                all_cols, index=set_idx(guesses['entity'],   all_cols))
-            col_customer = st.selectbox("Cliente (Fatturazione)",all_cols, index=set_idx(guesses['customer'], all_cols))
-            col_prod     = st.selectbox("Prodotto",              all_cols, index=set_idx(guesses['product'],  all_cols))
-            col_euro     = st.selectbox("Valore (€)",            all_cols, index=set_idx(guesses['euro'],     all_cols))
-            col_kg       = st.selectbox("Peso (Kg)",             all_cols, index=set_idx(guesses['kg'],       all_cols))
-            col_cartons  = st.selectbox("Cartoni (Qty)",         all_cols, index=set_idx(guesses['cartons'],  all_cols))
-            col_data     = st.selectbox("Data Riferimento",      all_cols, index=set_idx(guesses['date'],     all_cols))
+            col_entity   = st.selectbox("Entità",                all_cols, index=set_idx(guesses['entity'],       all_cols))
+            col_customer = st.selectbox("Cliente (Fatturazione)",all_cols, index=set_idx(guesses['customer'],     all_cols))
+            col_prod     = st.selectbox("Prodotto",              all_cols, index=set_idx(guesses['product'],      all_cols))
+            col_euro     = st.selectbox("Valore (€)",            all_cols, index=set_idx(guesses['euro'],         all_cols))
+            col_kg       = st.selectbox("Peso (Kg)",             all_cols, index=set_idx(guesses['kg'],           all_cols))
+            col_cartons  = st.selectbox("Cartoni Ordinati",      all_cols, index=set_idx(guesses['cartons'],      all_cols))
+            col_cartons_del = st.selectbox("Cartoni Consegnati", all_cols, index=set_idx(guesses['cartons_del'],  all_cols))
+            col_data     = st.selectbox("Data Riferimento",      all_cols, index=set_idx(guesses['date'],         all_cols))
 
         st.sidebar.markdown("### 🔍 Filtri Rapidi")
         df_global = df_processed.copy()
@@ -2398,15 +2418,21 @@ if page == "📊 Vendite & Fatturazione":
                 master_df = build_agg_with_ratios(
                     df_tree_raw, primary_col, col_cartons, col_kg, col_euro
                 )
+                master_df = _add_service_level(
+                    master_df, df_tree_raw, primary_col, col_cartons, col_cartons_del
+                )
                 st.dataframe(
                     master_df,
                     column_config={
-                        primary_col:         st.column_config.TextColumn("Elemento Master"),
-                        col_cartons:         st.column_config.NumberColumn("CT Tot",  format="%d"),
-                        col_kg:              st.column_config.NumberColumn("Kg Tot",  format="%.0f"),
-                        col_euro:            st.column_config.NumberColumn("Valore",  format="€ %.2f"),
-                        'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
-                        'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
+                        primary_col:             st.column_config.TextColumn("Elemento Master"),
+                        col_cartons:             st.column_config.NumberColumn("CT Ord",  format="%d"),
+                        col_kg:                  st.column_config.NumberColumn("Kg Tot",  format="%.0f"),
+                        col_euro:                st.column_config.NumberColumn("Valore",  format="€ %.2f"),
+                        'Valore Medio €/Kg':     st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
+                        'Valore Medio €/CT':     st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
+                        '% Livello Servizio':    st.column_config.ProgressColumn(
+                            "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                        ),
                     }, hide_index=True, use_container_width=True)
 
                 st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
@@ -2418,6 +2444,9 @@ if page == "📊 Vendite & Fatturazione":
                     detail_df  = df_tree_raw[df_tree_raw[primary_col] == selected_val]
                     detail_agg = build_agg_with_ratios(
                         detail_df, secondary_col, col_cartons, col_kg, col_euro
+                    )
+                    detail_agg = _add_service_level(
+                        detail_agg, detail_df, secondary_col, col_cartons, col_cartons_del
                     )
                     st.markdown(
                         f'<div class="detail-section">Dettaglio per: <b>{selected_val}</b></div>',
@@ -2461,12 +2490,15 @@ if page == "📊 Vendite & Fatturazione":
                         st.dataframe(
                             detail_agg[[c for c in _child_vis if c in detail_agg.columns]],
                             column_config={
-                                secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
-                                col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
-                                col_kg:              st.column_config.NumberColumn("Kg",     format="%.0f"),
-                                col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
-                                'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
-                                'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
+                                secondary_col:           st.column_config.TextColumn("Dettaglio (Child)"),
+                                col_cartons:             st.column_config.NumberColumn("CT Ord",  format="%d"),
+                                col_kg:                  st.column_config.NumberColumn("Kg",      format="%.0f"),
+                                col_euro:                st.column_config.NumberColumn("Valore",  format="€ %.2f"),
+                                'Valore Medio €/Kg':     st.column_config.NumberColumn("€/Kg",   format="€ %.2f"),
+                                'Valore Medio €/CT':     st.column_config.NumberColumn("€/CT",   format="€ %.2f"),
+                                '% Livello Servizio':    st.column_config.ProgressColumn(
+                                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                                ),
                             }, hide_index=True, use_container_width=True)
                     else:
                         st.dataframe(
@@ -3313,52 +3345,72 @@ elif page == "🏭 Analisi Acquisti":
                                     .sum().reset_index())
                         fig_trend = go.Figure()
 
-                        # trace[0] — area fill (solo colore, no legend)
+                        # ── Funzione formato valore ────────────────────────────────
+                        def _fmt_v(v):
+                            if v >= 1e6:  return f"€{v/1e6:.1f}M"
+                            if v >= 1000: return f"€{v/1e3:.0f}K"
+                            return f"€{v:.0f}"
+
+                        # ── Prepara label: mostra solo max, min, ultimo punto ──────
+                        if not trend_pu.empty:
+                            _vals  = trend_pu[pu_amount]
+                            _idx_max  = _vals.idxmax()
+                            _idx_min  = _vals.idxmin()
+                            _idx_last = _vals.index[-1]
+                            _key_idx  = {_idx_max, _idx_min, _idx_last}
+                            # Alterna posizione label su/giù per evitare sovrapposizioni
+                            _tpos = [
+                                ('top center' if i in _key_idx
+                                 else 'top center')
+                                for i in _vals.index
+                            ]
+                            _tlabels = [
+                                _fmt_v(v) if i in _key_idx else ''
+                                for i, v in zip(_vals.index, _vals)
+                            ]
+
+                        # trace[0] — area fill
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             fill='tozeroy',
-                            fillcolor='rgba(67,233,123,0.18)',
+                            fillcolor='rgba(67,233,123,0.15)',
                             line=dict(color='rgba(0,0,0,0)', width=0),
                             mode='lines', showlegend=False, hoverinfo='skip',
                         ))
-                        # trace[1] — linea principale + marker + etichette
+
+                        # trace[1] — linea + marker + label solo sui punti chiave
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             mode='lines+markers+text',
-                            name='💸 Spesa €',
-                            showlegend=True,
-                            line=dict(color='#38f9d7', width=2.5, shape='spline', smoothing=1.1),
-                            marker=dict(
-                                size=10, color='#43e97b',
-                                line=dict(color='white', width=2.5),
-                                symbol='circle',
-                            ),
-                            text=trend_pu[pu_amount].apply(
-                                lambda v: f"€{v/1e6:.1f}M" if v >= 1e6
-                                          else (f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}")
-                            ),
+                            name='💸 Spesa €', showlegend=True,
+                            line=dict(color='#38f9d7', width=2.5,
+                                      shape='spline', smoothing=1.1),
+                            marker=dict(size=9, color='#43e97b',
+                                        line=dict(color='white', width=2)),
+                            text=_tlabels,
                             textposition='top center',
-                            textfont=dict(size=11, color='rgba(255,255,255,0.9)',
+                            textfont=dict(size=11, color='rgba(255,255,255,0.95)',
                                           family='Arial Bold'),
                             hovertemplate=(
                                 "📅 <b>%{x|%B %Y}</b><br>"
-                                "💸 € %{y:,.2f}<extra></extra>"
+                                "💸 € %{y:,.0f}<extra></extra>"
                             ),
                         ))
 
-                        # trace[2] — media mobile rolling 3 mesi (solo se dati sufficienti)
+                        # trace[2] — media 3M (se abbastanza dati)
                         if len(trend_pu) >= 3:
-                            roll_avg = trend_pu[pu_amount].rolling(3, center=True, min_periods=1).mean()
+                            roll_avg = (trend_pu[pu_amount]
+                                        .rolling(3, center=True, min_periods=1).mean())
                             fig_trend.add_trace(go.Scatter(
                                 x=trend_pu[pu_date], y=roll_avg,
-                                mode='lines', name='Media 3M',
-                                line=dict(color='rgba(247,151,30,0.7)', width=2,
+                                mode='lines', name='📈 Media 3M',
+                                line=dict(color='rgba(247,151,30,0.75)', width=2,
                                           dash='dot', shape='spline'),
-                                hovertemplate="📈 Media 3M: € %{y:,.2f}<extra></extra>",
+                                hovertemplate="📈 Media 3M: € %{y:,.0f}<extra></extra>",
                             ))
 
                         fig_trend.update_layout(
-                            height=420,
+                            height=460,
                             xaxis=dict(
                                 title="", showgrid=False,
                                 tickformat="%b %Y", tickangle=-30,
@@ -3369,19 +3421,23 @@ elif page == "🏭 Analisi Acquisti":
                                 gridcolor='rgba(67,233,123,0.1)',
                                 tickprefix="€ ", tickfont=dict(size=10),
                                 zeroline=False,
+                                # range esteso del 15% sopra il max per le label
+                                range=[0, trend_pu[pu_amount].max() * 1.20
+                                       if not trend_pu.empty else 1],
                             ),
                             paper_bgcolor='rgba(0,0,0,0)',
                             plot_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(l=0, r=10, t=30, b=55),  # t alto per label, b per legenda
+                            margin=dict(l=0, r=10, t=15, b=55),
                             showlegend=True,
                             legend=dict(
                                 orientation='h',
                                 x=0.5, xanchor='center',
-                                y=-0.18, yanchor='top',    # sotto il grafico
+                                y=-0.18, yanchor='top',
                                 font=dict(size=10),
                                 bgcolor='rgba(0,0,0,0)',
                             ),
                         )
+
                         _plot(fig_trend)
                     except Exception as e:
                         st.warning(f"Impossibile generare grafico temporale: {e}")
@@ -3415,78 +3471,85 @@ elif page == "🏭 Analisi Acquisti":
                         for v in norm_s
                     ]
 
-                    # ── Top Fornitori: barre raggruppate — € sopra, Kg sotto per fornitore ──
+                    # ── Top Fornitori: subplots con scale indipendenti per € e Kg ──
+                    # Ogni pannello ha la propria scala X → barre sempre proporzionate
+                    # e leggibili indipendentemente dall'ordine di grandezza del valore.
                     _has_kg = pu_kg in top_supp_full.columns
-                    fig_supp = go.Figure()
+                    from plotly.subplots import make_subplots as _msp
 
-                    # Barra 1 — Spesa € — etichetta fuori barra, sempre leggibile
+                    if _has_kg:
+                        fig_supp = _msp(
+                            rows=1, cols=2, shared_yaxes=True,
+                            column_widths=[0.58, 0.42],
+                            horizontal_spacing=0.06,
+                            subplot_titles=["💸 Spesa (€)", "⚖️ Volume (Kg)"],
+                        )
+                    else:
+                        fig_supp = _msp(rows=1, cols=1)
+
+                    # ── Pannello SX — Spesa € ──────────────────────────────────────
                     fig_supp.add_trace(go.Bar(
                         y=top_supp_full[pu_supp],
                         x=top_supp_full[pu_amount],
-                        orientation='h',
-                        name='💸 Spesa €',
+                        orientation='h', name='💸 Spesa €',
                         marker=dict(color=bar_cols_s,
                                     line=dict(color='rgba(255,255,255,0.3)', width=0.8)),
                         text=top_supp_full[pu_amount].apply(
                             lambda v: f"€ {v/1e6:.2f}M" if v >= 1e6
                                       else (f"€ {v/1e3:.0f}K" if v >= 1000 else f"€ {v:.0f}")
                         ),
-                        textposition='outside',
+                        textposition='outside', cliponaxis=False,
                         textfont=dict(size=11, family='Arial Bold'),
-                        cliponaxis=False,
                         hovertemplate="<b>%{y}</b><br>💸 € %{x:,.0f}<extra></extra>",
-                    ))
+                    ), row=1, col=1)
 
-                    # Barra 2 — Volume Kg — etichetta fuori barra
+                    # ── Pannello DX — Volume Kg ────────────────────────────────────
                     if _has_kg:
                         _kg_norm   = top_supp_full[pu_kg] / (top_supp_full[pu_kg].max() + 1e-9)
-                        _kg_colors = [f"rgba(247,{int(151+55*v)},{int(30+70*v)},0.82)"
+                        _kg_colors = [f"rgba(247,{int(151+55*v)},{int(30+70*v)},0.85)"
                                       for v in _kg_norm]
                         fig_supp.add_trace(go.Bar(
                             y=top_supp_full[pu_supp],
                             x=top_supp_full[pu_kg],
-                            orientation='h',
-                            name='⚖️ Volume Kg',
+                            orientation='h', name='⚖️ Volume Kg',
                             marker=dict(color=_kg_colors,
                                         line=dict(color='rgba(255,255,255,0.3)', width=0.8)),
                             text=top_supp_full[pu_kg].apply(
                                 lambda v: f"{v/1e3:.0f}K Kg" if v >= 1000 else f"{v:.0f} Kg"
                             ),
-                            textposition='outside',
+                            textposition='outside', cliponaxis=False,
                             textfont=dict(size=10, family='Arial'),
-                            cliponaxis=False,
                             hovertemplate="<b>%{y}</b><br>⚖️ %{x:,.0f} Kg<extra></extra>",
-                        ))
+                        ), row=1, col=2)
 
-
-                    # Altezza dinamica: 2 barre per fornitore se Kg presente
-                    _rows_per_sup = 2 if _has_kg else 1
-                    _h_supp = max(340, n_sup * 48 * _rows_per_sup)
+                    _h_supp = max(320, n_sup * 46)
                     fig_supp.update_layout(
-                        height=_h_supp,
-                        barmode='group',
-                        bargap=0.28,
-                        bargroupgap=0.05,
-                        showlegend=True,
-                        legend=dict(
-                            orientation='h',
-                            x=0.5, xanchor='center',
-                            y=-0.08, yanchor='top',   # SOTTO le barre — no overlap
-                            font=dict(size=10),
-                            bgcolor='rgba(0,0,0,0)',
-                        ),
+                        height=_h_supp, showlegend=False,
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=10, r=110, t=10, b=50),  # r largo per etichette outside
-                        xaxis=dict(
-                            showgrid=True, gridcolor='rgba(130,150,200,0.15)',
-                            zeroline=False, tickformat=",.0f",
-                        ),
-                        yaxis=dict(
-                            autorange="reversed", showgrid=False,
-                            tickfont=dict(size=10),
-                        ),
+                        margin=dict(l=10, r=90, t=36, b=10),
                     )
+                    fig_supp.update_yaxes(
+                        autorange="reversed", showgrid=False, tickfont=dict(size=10),
+                    )
+                    # Asse X pannello €
+                    fig_supp.update_xaxes(
+                        showgrid=True, gridcolor='rgba(0,198,255,0.12)',
+                        tickprefix="€ ", zeroline=False,
+                        tickfont=dict(size=9), row=1, col=1,
+                    )
+                    # Asse X pannello Kg
+                    if _has_kg:
+                        fig_supp.update_xaxes(
+                            showgrid=True, gridcolor='rgba(247,151,30,0.12)',
+                            ticksuffix=" Kg", zeroline=False,
+                            tickfont=dict(size=9), row=1, col=2,
+                        )
+                    # Subplot titles in un colore leggibile e dimensione adeguata
+                    for ann in fig_supp.layout.annotations:
+                        ann.font.size  = 12
+                        ann.font.color = 'rgba(200,210,230,0.85)'
+
 
                     _plot(fig_supp)
 
