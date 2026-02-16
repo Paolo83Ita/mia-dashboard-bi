@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v84.0 - Cache busting mobile; KPI colore tema chiaro; emoji 🎁→🏷️ Promo, 📦→🏭 Acquisti; caption tipo data sotto ogni grafico; tabella Promo full-width; Top Fornitori leggibile con Kg separato: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v85.0 - Top Fornitori: subplots side-by-side (€|Kg) no overlap; P1 layout: col_r Esplosione + full-width drill-down; titolo📊 P1; CSS h1 mobile; tabelle full-width: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v84.0",
+    page_title="EITA Analytics Pro v85.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -198,6 +198,7 @@ st.markdown("""
     /* Subheader più compatti */
     h3 { font-size:1.1rem !important; }
     h2 { font-size:1.25rem !important; }
+    h1 { font-size:1.55rem !important; }  /* titolo pagina su mobile */
   }
 </style>
 <!-- zoom gestito via Plotly config -->
@@ -2157,7 +2158,7 @@ if page == "📊 Vendite & Fatturazione":
                 except Exception as ex:
                     st.error(f"Errore: {ex}")
 
-        st.title(f"Performance Overview: {sel_ent or 'Global'}")
+        st.title(f"📊 Performance Overview: {sel_ent or 'Global'}")
 
         # ── AGGIORNA CONTESTO AI con df_global (filtrato per entity+data+filtri extra) ──
         # df_global ha entity=_g_entity + data col_data in [G_START,G_END] + eventuali filtri avanzati
@@ -2325,10 +2326,13 @@ if page == "📊 Vendite & Fatturazione":
                         )
                     _plot(fig)
                     st.caption(f"📅 Data: **{col_data}**")
+
+            # ── COL_R: Esplosione Prodotto o Dettaglio Cliente ──────────────
+            with col_r:
+                submit_btn = False  # default (sovrascritta dal form se TUTTI selezionato)
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto (Master-Detail)")
-                    st.info("💡 Usa il menu a tendina per il drill-down.")
-
+                    st.info("💡 Applica i filtri e premi **Applica** per esplorare la gerarchia.")
                     with st.form("product_explosion_form"):
                         group_mode   = st.radio(
                             "Gerarchia:", ["Prodotto → Cliente", "Cliente → Prodotto"],
@@ -2350,85 +2354,6 @@ if page == "📊 Vendite & Fatturazione":
                         sel_c      = st.multiselect("Filtra Clienti:", cust_available,
                                                     placeholder="Tutti i clienti...")
                         submit_btn = st.form_submit_button("🔄 Applica Filtri")
-
-                    if submit_btn or 'sales_raw_df' in st.session_state:
-                        if submit_btn:
-                            df_ps = df_target.copy()
-                            if "TUTTI I PRODOTTI" not in sel_p:
-                                df_ps = df_ps[df_ps[col_prod].isin(sel_p)]
-                            if sel_c:
-                                df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
-                            st.session_state['sales_raw_df']     = df_ps
-                            st.session_state['sales_group_mode'] = group_mode
-                            st.session_state.pop('drill_down_selector', None)
-
-                        df_tree_raw   = st.session_state.get('sales_raw_df',    df_target)
-                        mode          = st.session_state.get('sales_group_mode', "Prodotto → Cliente")
-                        primary_col   = col_prod     if mode == "Prodotto → Cliente" else col_customer
-                        secondary_col = col_customer if mode == "Prodotto → Cliente" else col_prod
-
-                        # OTTIMIZZAZIONE: usa helper riutilizzabile per aggregazione
-                        master_df = build_agg_with_ratios(
-                            df_tree_raw, primary_col, col_cartons, col_kg, col_euro
-                        )
-                        st.dataframe(
-                            master_df,
-                            column_config={
-                                primary_col:         st.column_config.TextColumn("Elemento (Master)", width="medium"),
-                                col_cartons:         st.column_config.NumberColumn("CT Tot",    format="%d"),
-                                col_kg:              st.column_config.NumberColumn("Kg Tot",    format="%.0f"),
-                                col_euro:            st.column_config.NumberColumn("Valore Tot",format="€ %.2f"),
-                                'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
-                                'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
-                            }, hide_index=True
-                        , use_container_width=True)
-
-                        st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
-                        selected_val = st.selectbox(
-                            "Elemento da esplorare:", master_df[primary_col].unique(),
-                            key="drill_down_selector"
-                        )
-
-                        if selected_val is not None:
-                            detail_df  = df_tree_raw[df_tree_raw[primary_col] == selected_val]
-                            detail_agg = build_agg_with_ratios(
-                                detail_df, secondary_col, col_cartons, col_kg, col_euro
-                            )
-                            st.markdown(
-                                f'<div class="detail-section">Dettaglio per: <b>{selected_val}</b></div>',
-                                unsafe_allow_html=True
-                            )
-                            st.dataframe(
-                                detail_agg,
-                                column_config={
-                                    secondary_col:       st.column_config.TextColumn("Dettaglio (Child)", width="medium"),
-                                    col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
-                                    col_kg:              st.column_config.NumberColumn("Kg",     format="%.0f"),
-                                    col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
-                                    'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
-                                    'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
-                                }, hide_index=True
-                            , use_container_width=True)
-
-                        # Export flat (tutti i livelli — grouped su 2 chiavi)
-                        full_flat = (
-                            df_tree_raw
-                            .groupby([primary_col, secondary_col])
-                            .agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'})
-                            .reset_index()
-                            .sort_values(col_euro, ascending=False)
-                            .assign(**{
-                                'Valore Medio €/Kg': lambda d: np.where(d[col_kg] > 0, d[col_euro] / d[col_kg], 0),
-                                'Valore Medio €/CT': lambda d: np.where(d[col_cartons] > 0, d[col_euro] / d[col_cartons], 0),
-                            })
-                        )
-                        st.download_button(
-                            "📥 Scarica Report Excel Completo",
-                            data=convert_df_to_excel(full_flat),
-                            file_name=f"Explosion_Full_Report_{datetime.date.today()}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-
                 else:
                     st.markdown("#### 🧾 Dettaglio per Cliente Selezionato")
                     st.caption(f"Portafoglio ordini per: {sel_target}")
@@ -2436,15 +2361,14 @@ if page == "📊 Vendite & Fatturazione":
                     st.dataframe(
                         ps,
                         column_config={
-                            col_prod:            st.column_config.TextColumn("🏷️ Articolo / Prodotto", width="large"),
+                            col_prod:            st.column_config.TextColumn("🏷️ Articolo / Prodotto"),
                             col_cartons:         st.column_config.NumberColumn("📦 CT",    format="%d"),
                             col_kg:              st.column_config.NumberColumn("⚖️ Kg",    format="%d"),
                             col_euro:            st.column_config.NumberColumn("💰 Valore",format="€ %.2f"),
                             'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med",format="€ %.2f"),
                             'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med",format="€ %.2f"),
                         },
-                        hide_index=True, height=500
-                    , use_container_width=True)
+                        hide_index=True, height=500, use_container_width=True)
                     st.download_button(
                         "📥 Scarica Dettaglio Excel (.xlsx)",
                         data=convert_df_to_excel(ps),
@@ -2453,8 +2377,82 @@ if page == "📊 Vendite & Fatturazione":
                         key="btn_download_single"
                     )
 
+            # ── SEZIONE DETTAGLIO — full width sotto le colonne ─────────────
+            if "TUTTI" in sel_target and (submit_btn or 'sales_raw_df' in st.session_state):
+                if submit_btn:
+                    df_ps = df_target.copy()
+                    if "TUTTI I PRODOTTI" not in sel_p:
+                        df_ps = df_ps[df_ps[col_prod].isin(sel_p)]
+                    if sel_c:
+                        df_ps = df_ps[df_ps[col_customer].astype(str).isin(sel_c)]
+                    st.session_state['sales_raw_df']     = df_ps
+                    st.session_state['sales_group_mode'] = group_mode
+                    st.session_state.pop('drill_down_selector', None)
 
-# ==========================================================================
+                df_tree_raw   = st.session_state.get('sales_raw_df',    df_target)
+                mode          = st.session_state.get('sales_group_mode', "Prodotto → Cliente")
+                primary_col   = col_prod     if mode == "Prodotto → Cliente" else col_customer
+                secondary_col = col_customer if mode == "Prodotto → Cliente" else col_prod
+
+                st.divider()
+                master_df = build_agg_with_ratios(
+                    df_tree_raw, primary_col, col_cartons, col_kg, col_euro
+                )
+                st.dataframe(
+                    master_df,
+                    column_config={
+                        primary_col:         st.column_config.TextColumn("Elemento Master"),
+                        col_cartons:         st.column_config.NumberColumn("CT Tot",  format="%d"),
+                        col_kg:              st.column_config.NumberColumn("Kg Tot",  format="%.0f"),
+                        col_euro:            st.column_config.NumberColumn("Valore",  format="€ %.2f"),
+                        'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
+                        'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
+                    }, hide_index=True, use_container_width=True)
+
+                st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
+                selected_val = st.selectbox(
+                    "Elemento da esplorare:", master_df[primary_col].unique(),
+                    key="drill_down_selector"
+                )
+                if selected_val is not None:
+                    detail_df  = df_tree_raw[df_tree_raw[primary_col] == selected_val]
+                    detail_agg = build_agg_with_ratios(
+                        detail_df, secondary_col, col_cartons, col_kg, col_euro
+                    )
+                    st.markdown(
+                        f'<div class="detail-section">Dettaglio per: <b>{selected_val}</b></div>',
+                        unsafe_allow_html=True
+                    )
+                    st.dataframe(
+                        detail_agg,
+                        column_config={
+                            secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
+                            col_cartons:         st.column_config.NumberColumn("CT",     format="%d"),
+                            col_kg:              st.column_config.NumberColumn("Kg",     format="%.0f"),
+                            col_euro:            st.column_config.NumberColumn("Valore", format="€ %.2f"),
+                            'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",  format="€ %.2f"),
+                            'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",  format="€ %.2f"),
+                        }, hide_index=True, use_container_width=True)
+
+                full_flat = (
+                    df_tree_raw
+                    .groupby([primary_col, secondary_col])
+                    .agg({col_cartons: 'sum', col_kg: 'sum', col_euro: 'sum'})
+                    .reset_index()
+                    .sort_values(col_euro, ascending=False)
+                    .assign(**{
+                        'Valore Medio €/Kg': lambda d: np.where(d[col_kg] > 0, d[col_euro] / d[col_kg], 0),
+                        'Valore Medio €/CT': lambda d: np.where(d[col_cartons] > 0, d[col_euro] / d[col_cartons], 0),
+                    })
+                )
+                st.download_button(
+                    "📥 Scarica Report Excel Completo",
+                    data=convert_df_to_excel(full_flat),
+                    file_name=f"Explosion_Full_Report_{datetime.date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+
 # PAGINA 2: CUSTOMER PROMO
 # ==========================================================================
 elif page == "🏷️ Analisi Customer Promo":
@@ -2783,8 +2781,8 @@ elif page == "🏷️ Analisi Customer Promo":
                         st.dataframe(
                             _tbl_final,
                             column_config={
-                                _COL_AT:    st.column_config.TextColumn("🏷️ Articolo", width="medium"),
-                                _COL_CL:    st.column_config.TextColumn("👤 Cliente",  width="medium"),
+                                _COL_AT:    st.column_config.TextColumn("🏷️ Articolo"),
+                                _COL_CL:    st.column_config.TextColumn("👤 Cliente"),
                                 _COL_CT:    st.column_config.NumberColumn("CT",         format="%d"),
                                 'Kg Totali':  st.column_config.NumberColumn("Kg Tot",   format="%.0f"),
                                 'Kg Promo':   st.column_config.NumberColumn("Kg Promo", format="%.0f"),
@@ -2794,8 +2792,7 @@ elif page == "🏷️ Analisi Customer Promo":
                                 '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
                                 '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
                                 _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
-                            }, hide_index=True
-                        , use_container_width=True)
+                            }, hide_index=True, use_container_width=True)
                         # Download Excel
                         if not _tbl_final.empty:
                             st.download_button(
@@ -3295,82 +3292,83 @@ elif page == "🏭 Analisi Acquisti":
                         for v in norm_s
                     ]
 
-                    fig_supp = go.Figure()
+                    # ── Top Fornitori: 2 pannelli side-by-side (€ | Kg) ──────────
+                    # make_subplots con shared_yaxes elimina qualsiasi sovrapposizione
+                    from plotly.subplots import make_subplots
+                    _has_kg = pu_kg in top_supp_full.columns
 
-                    # Barra €  (principale, sopra)
+                    if _has_kg:
+                        fig_supp = make_subplots(
+                            rows=1, cols=2,
+                            shared_yaxes=True,
+                            column_widths=[0.6, 0.4],
+                            horizontal_spacing=0.04,
+                            subplot_titles=["💸 Spesa (€)", "⚖️ Volume (Kg)"],
+                        )
+                    else:
+                        fig_supp = make_subplots(rows=1, cols=1)
+
+                    # Pannello SINISTRA — Spesa €
                     fig_supp.add_trace(go.Bar(
                         y=top_supp_full[pu_supp],
                         x=top_supp_full[pu_amount],
                         orientation='h',
                         name='💸 Spesa €',
-                        marker=dict(
-                            color=bar_cols_s,
-                            line=dict(color='rgba(255,255,255,0.5)', width=1),
-                        ),
+                        marker=dict(color=bar_cols_s,
+                                    line=dict(color='rgba(255,255,255,0.4)', width=0.8)),
                         text=top_supp_full[pu_amount].apply(
                             lambda v: f"€ {v/1e6:.2f}M" if v >= 1e6
                                       else (f"€ {v/1e3:.0f}K" if v >= 1000 else f"€ {v:.0f}")
                         ),
                         textposition='outside',
-                        textfont=dict(size=12, family='Arial Bold'),
+                        textfont=dict(size=11, family='Arial Bold'),
                         hovertemplate="<b>%{y}</b><br>💸 € %{x:,.0f}<extra></extra>",
-                    ))
+                        cliponaxis=False,
+                    ), row=1, col=1)
 
-                    # Barra Kg (secondaria, sotto) — asse X2 separato
-                    if pu_kg in top_supp_full.columns:
+                    # Pannello DESTRA — Volume Kg
+                    if _has_kg:
+                        _kg_norm   = top_supp_full[pu_kg] / (top_supp_full[pu_kg].max() + 1e-9)
+                        _kg_colors = [f"rgba(247,{int(151+60*v)},{int(30+80*v)},0.85)"
+                                      for v in _kg_norm]
                         fig_supp.add_trace(go.Bar(
                             y=top_supp_full[pu_supp],
                             x=top_supp_full[pu_kg],
                             orientation='h',
                             name='⚖️ Kg',
-                            xaxis='x2',
-                            marker=dict(
-                                color='rgba(247,151,30,0.75)',
-                                line=dict(color='rgba(255,255,255,0.4)', width=1),
-                            ),
+                            marker=dict(color=_kg_colors,
+                                        line=dict(color='rgba(255,255,255,0.4)', width=0.8)),
                             text=top_supp_full[pu_kg].apply(
-                                lambda v: f"{v/1e3:.0f}K Kg" if v >= 1000 else f"{v:.0f} Kg"
+                                lambda v: f"{v/1e3:.0f}K" if v >= 1000 else f"{v:.0f}"
                             ),
                             textposition='outside',
                             textfont=dict(size=11, family='Arial'),
                             hovertemplate="<b>%{y}</b><br>⚖️ %{x:,.0f} Kg<extra></extra>",
-                        ))
-                        has_kg_axis = True
-                    else:
-                        has_kg_axis = False
+                            cliponaxis=False,
+                        ), row=1, col=2)
 
-                    # Altezza dinamica: più fornitori → più spazio
-                    _h_supp = max(380, n_sup * 68)
-
+                    _h_supp = max(320, n_sup * 52)
                     fig_supp.update_layout(
                         height=_h_supp,
-                        barmode='group',
-                        bargap=0.22,
-                        bargroupgap=0.08,
-                        yaxis=dict(
-                            autorange="reversed", showgrid=False,
-                            tickfont=dict(size=11),
-                        ),
-                        xaxis=dict(
-                            title="Spesa (€)", showgrid=True,
-                            gridcolor='rgba(0,198,255,0.12)',
-                            tickprefix="€ ", zeroline=False,
-                            side='bottom',
-                        ),
-                        **({"xaxis2": dict(
-                            title="Volume (Kg)", showgrid=False,
-                            overlaying='x', side='top',
-                            zeroline=False, showticklabels=False,
-                        )} if has_kg_axis else {}),
+                        showlegend=False,
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=10, r=90, t=36, b=36),
-                        showlegend=True,
-                        legend=dict(
-                            orientation='h', x=0.0, y=1.05,
-                            font=dict(size=10), bgcolor='rgba(0,0,0,0)',
-                        ),
+                        margin=dict(l=10, r=70, t=36, b=10),
+                        barmode='relative',
                     )
+                    fig_supp.update_yaxes(
+                        autorange="reversed", showgrid=False, tickfont=dict(size=10),
+                    )
+                    fig_supp.update_xaxes(
+                        showgrid=True, gridcolor='rgba(0,198,255,0.12)',
+                        tickprefix="€ ", zeroline=False, row=1, col=1
+                    )
+                    if _has_kg:
+                        fig_supp.update_xaxes(
+                            showgrid=True, gridcolor='rgba(247,151,30,0.12)',
+                            ticksuffix=" Kg", zeroline=False, row=1, col=2
+                        )
+
                     _plot(fig_supp)
                     st.caption(f"📅 Data: **{pu_date}**")
 
