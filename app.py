@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v82.0 - Page 3: filtro periodo uguale a Page 1/2 (G_START/G_END diretto); rimossa logica smart che sovrascriveva la selezione; empty = KPI 0 + warning con range disponibile: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v83.0 - Fix root cause data acquisti: priorità colonna data = Invoice date > Date of receipt > Purchase order date (ordine emesso settimane prima, causava periodo apparentemente vuoto): contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v82.0",
+    page_title="EITA Analytics Pro v83.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -451,7 +451,7 @@ def guess_column_role(df: pd.DataFrame, page_type: str = "Sales") -> dict:
                     'product': None, 'category': None, 'price': None, 'row_amount': None}
         rules = {
             'supplier':   ['Supplier name', 'Supplier number'],
-            'order_date': ['Purchase order date', 'Date of receipt'],
+            'order_date': ['Invoice date', 'Date of receipt', 'Purchase order date'],
             'amount':     ['Invoice amount', 'Row amount'],
             'kg':         ['Kg acquistati'],
             'division':   ['Division'],
@@ -2989,7 +2989,7 @@ elif page == "📦 Analisi Acquisti":
                          index=set_idx(pu_saved.get("pu_div",    guesses_pu.get('division')),   all_cols_pu))
             pu_supp   = st.selectbox("Supplier Name",    all_cols_pu,
                          index=set_idx(pu_saved.get("pu_supp",   guesses_pu.get('supplier')),   all_cols_pu))
-            pu_date   = st.selectbox("Order Date",       all_cols_pu,
+            pu_date   = st.selectbox("Data riferimento",  all_cols_pu,
                          index=set_idx(pu_saved.get("pu_date",   guesses_pu.get('order_date')), all_cols_pu))
             pu_amount = st.selectbox("Invoice Amount",   all_cols_pu,
                          index=set_idx(pu_saved.get("pu_amount", guesses_pu.get('amount')),     all_cols_pu))
