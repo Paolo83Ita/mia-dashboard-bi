@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v79.0 - Fix definitivo Bug7: df_pu_global=df_filtered_period sempre (anche vuoto), KPI=0 se periodo senza dati; rimosso dead code df_sales_for_promo (load Drive inutile): contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v80.0 - Fix architetturale Page 3: selettore periodo LOCALE indipendente da G_START/G_END, default smart (intersezione globale↔file o range completo); pulsante Ricarica Drive; persistenza pu_period: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v79.0",
+    page_title="EITA Analytics Pro v80.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -3021,42 +3021,78 @@ elif page == "📦 Analisi Acquisti":
             sel_div_pu   = st.sidebar.selectbox("Divisione", divs, index=default_div_idx)
             df_pu_global = df_pu_global[df_pu_global[pu_div].astype(str) == sel_div_pu]
 
-        # --- Periodo di Analisi ---
-        # FIX: converte la colonna data se non è già datetime,
-        # poi applica il filtro globale G_START/G_END.
+        # --- Periodo di Analisi (selettore LOCALE — indipendente dal periodo globale) ---
+        # Il file acquisti ha un range temporale proprio (es. Apr2025–Dic2026) che può
+        # non coincidere con il periodo globale Sales (G_START/G_END).
+        # → Usiamo un selettore locale con default intelligente:
+        #   • se il periodo globale si interseca col file → usa l'intersezione
+        #   • altrimenti → usa l'intero range disponibile nel file
         d_start_pu = d_end_pu = None
         if pu_date in df_pu_global.columns:
-            # Forza conversione datetime se necessario
             if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
                 df_pu_global[pu_date] = pd.to_datetime(
                     df_pu_global[pu_date], dayfirst=True, errors='coerce'
                 )
-            # Rimuovi NaT
             df_pu_global = df_pu_global.dropna(subset=[pu_date])
 
             if pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]) and not df_pu_global.empty:
                 _min_d = df_pu_global[pu_date].min()
                 _max_d = df_pu_global[pu_date].max()
                 if pd.notnull(_min_d) and pd.notnull(_max_d):
-                    # Usa il selettore data GLOBALE (G_START / G_END)
-                    d_start_pu, d_end_pu = G_START, G_END
-                    df_filtered_period = df_pu_global[
+                    _pu_file_start = _min_d.date()
+                    _pu_file_end   = _max_d.date()
+
+                    # Default: intersezione globale ↔ file, oppure range completo
+                    if G_START <= _pu_file_end and G_END >= _pu_file_start:
+                        _def_s = max(G_START, _pu_file_start)
+                        _def_e = min(G_END,   _pu_file_end)
+                    else:
+                        _def_s, _def_e = _pu_file_start, _pu_file_end
+
+                    # Ripristina periodo salvato dall'utente (se nel range del file)
+                    _sp = pu_saved.get("pu_period")
+                    if _sp and _sp[0] and _sp[1]:
+                        try:
+                            import datetime as _dt
+                            _s2_raw = _sp[0] if isinstance(_sp[0], _dt.date) else _dt.date.fromisoformat(str(_sp[0]))
+                            _e2_raw = _sp[1] if isinstance(_sp[1], _dt.date) else _dt.date.fromisoformat(str(_sp[1]))
+                            _s2 = max(_pu_file_start, _s2_raw)
+                            _e2 = min(_pu_file_end,   _e2_raw)
+                            if _s2 <= _e2:
+                                _def_s, _def_e = _s2, _e2
+                        except Exception:
+                            pass
+
+                    # Verifica che il range default abbia effettivamente dati:
+                    # se l'intersezione esiste come date ma non ha righe, usa range completo
+                    _pre_check = df_pu_global[
+                        (df_pu_global[pu_date].dt.date >= _def_s) &
+                        (df_pu_global[pu_date].dt.date <= _def_e)
+                    ]
+                    if _pre_check.empty:
+                        _def_s, _def_e = _pu_file_start, _pu_file_end
+
+                    # Selettore data locale visibile in sidebar
+                    st.sidebar.markdown("### 📅 Periodo Acquisti")
+                    st.sidebar.caption(
+                        f"File: {_pu_file_start.strftime('%d/%m/%Y')} – {_pu_file_end.strftime('%d/%m/%Y')}"
+                    )
+                    d_start_pu, d_end_pu = safe_date_input(
+                        "Periodo", _def_s, _def_e, key="pu_period_selector"
+                    )
+
+                    # Applica filtro (può risultare vuoto solo se l'utente sceglie manualmente
+                    # un range senza transazioni)
+                    df_pu_global = df_pu_global[
                         (df_pu_global[pu_date].dt.date >= d_start_pu) &
                         (df_pu_global[pu_date].dt.date <= d_end_pu)
                     ]
-                    # Applica il filtro periodo: se il risultato è vuoto, df_pu_global
-                    # viene impostato a VUOTO — KPI e trend mostreranno 0/empty.
-                    # Il warning spiega all'utente il range disponibile nel file.
-                    if df_filtered_period.empty:
+                    if df_pu_global.empty:
                         st.warning(
-                            f"⚠️ Nessun dato acquisti nel periodo "
-                            f"**{G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}**.\n\n"
-                            f"Dati disponibili dal **{_min_d.strftime('%d/%m/%Y')}** "
-                            f"al **{_max_d.strftime('%d/%m/%Y')}**. "
-                            f"Modifica il periodo nella sidebar."
+                            f"⚠️ Nessun dato acquisti nel periodo selezionato "
+                            f"({d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}). "
+                            f"Usa il selettore **Periodo Acquisti** in sidebar per modificarlo."
                         )
-                    # In entrambi i casi assegna il risultato filtrato (vuoto o no)
-                    df_pu_global = df_filtered_period
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
@@ -3089,8 +3125,9 @@ elif page == "📦 Analisi Acquisti":
                     "pu_cat":       pu_cat,
                     "sel_div_pu":   sel_div_pu,
                     "sel_suppliers":sel_suppliers,
-                    "d_start_pu":   d_start_pu.isoformat()  if d_start_pu else None,
-                    "d_end_pu":     d_end_pu.isoformat()    if d_end_pu   else None,
+                    # Persiste il periodo locale (date objects → isoformat)
+                    "pu_period": [d_start_pu.isoformat() if d_start_pu else None,
+                                  d_end_pu.isoformat()   if d_end_pu   else None],
                 }
                 st.sidebar.success("Impostazioni salvate ✅")
         with c_reset:
@@ -3099,6 +3136,13 @@ elif page == "📦 Analisi Acquisti":
                 if "pu_settings" in st.session_state:
                     del st.session_state["pu_settings"]
                 st.rerun()
+
+        # Ricarica dati dal Drive (pulisce cache per il file Acquisti)
+        if st.sidebar.button("🔄 Ricarica dati Drive", key="btn_reload_pu",
+                              help="Forza il ricaricamento del file da Google Drive"):
+            load_dataset.clear()
+            smart_analyze_and_clean.clear()
+            st.rerun()
 
         # Importa/Esporta settings come JSON (persistenza cross-sessione)
         with st.sidebar.expander("📤 Esporta / 📥 Importa Impostazioni", expanded=False):
