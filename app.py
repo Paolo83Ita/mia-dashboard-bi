@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v78.0 - Fix trace 2: ridotto da 4 a 3 trace (rimosso shadow layer ridondante); fix coerenza KPI: banner storico con periodo effettivo; pulizia: rimosso _COL_DT obsoleto, dropna duplicato, commento v36: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v79.0 - Fix definitivo Bug7: df_pu_global=df_filtered_period sempre (anche vuoto), KPI=0 se periodo senza dati; rimosso dead code df_sales_for_promo (load Drive inutile): contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v78.0",
+    page_title="EITA Analytics Pro v79.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2445,7 +2445,6 @@ elif page == "🎁 Analisi Customer Promo":
     st.title("🎁 Analisi Customer Promo")
 
     df_promo_processed = None
-    df_sales_for_promo = None
 
     if files:
         file_map = {f['name']: f for f in files}
@@ -2462,21 +2461,6 @@ elif page == "🎁 Analisi Customer Promo":
             )
             if df_promo_raw is not None:
                 df_promo_processed = smart_analyze_and_clean(df_promo_raw, "Promo")
-
-        # --- Carica Sales (per cross-analysis) ---
-        # OTTIMIZZAZIONE: load_dataset è già cachata per (id, modifiedTime).
-        # smart_analyze_and_clean è ora cachata → se il file Sales è già stato
-        # processato nella Pagina 1, non viene rielaborato.
-        sales_key = next(
-            (n for n in file_list if "from_order_to_invoice" in n.lower()), None
-        )
-        if sales_key:
-            with st.spinner('Integrazione dati vendita per analisi Promo...'):
-                df_sales_raw = load_dataset(
-                    file_map[sales_key]['id'], file_map[sales_key]['modifiedTime']
-                )
-                if df_sales_raw is not None:
-                    df_sales_for_promo = smart_analyze_and_clean(df_sales_raw, "Sales")
 
     if df_promo_processed is not None:
         guesses_p  = guess_column_role(df_promo_processed, "Promo")
@@ -3060,23 +3044,19 @@ elif page == "📦 Analisi Acquisti":
                         (df_pu_global[pu_date].dt.date >= d_start_pu) &
                         (df_pu_global[pu_date].dt.date <= d_end_pu)
                     ]
-                    # FIX PAGINA NERA: se il filtro periodo svuota il df,
-                    # avvisa l'utente e mostra lo storico completo disponibile
+                    # Applica il filtro periodo: se il risultato è vuoto, df_pu_global
+                    # viene impostato a VUOTO — KPI e trend mostreranno 0/empty.
+                    # Il warning spiega all'utente il range disponibile nel file.
                     if df_filtered_period.empty:
                         st.warning(
                             f"⚠️ Nessun dato acquisti nel periodo "
                             f"**{G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}**.\n\n"
                             f"Dati disponibili dal **{_min_d.strftime('%d/%m/%Y')}** "
-                            f"al **{_max_d.strftime('%d/%m/%Y')}**.\n\n"
-                            f"Modifica il periodo nella sidebar per visualizzare i dati acquisti."
+                            f"al **{_max_d.strftime('%d/%m/%Y')}**. "
+                            f"Modifica il periodo nella sidebar."
                         )
-                        # Aggiorna d_start/end al range REALE dei dati (non al periodo vuoto richiesto)
-                        d_start_pu, d_end_pu = _min_d.date(), _max_d.date()
-                        _periodo_fallback = True   # flag: i dati mostrati sono storici, non del periodo selezionato
-                        # df_pu_global rimane invariato (storico completo della divisione)
-                    else:
-                        df_pu_global = df_filtered_period
-                        _periodo_fallback = False
+                    # In entrambi i casi assegna il risultato filtrato (vuoto o no)
+                    df_pu_global = df_filtered_period
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
@@ -3142,7 +3122,7 @@ elif page == "📦 Analisi Acquisti":
                 except Exception as ex:
                     st.error(f"Errore importazione: {ex}")
 
-        # Aggiorna contesto AI
+        # Aggiorna contesto AI con df filtrato (aggiornato a ogni render)
         if not df_pu_global.empty:
             _periodo_pu = ""
             try:
@@ -3152,41 +3132,31 @@ elif page == "📦 Analisi Acquisti":
             st.session_state["ai_context_df"]    = df_pu_global
             st.session_state["ai_context_label"] = f"Acquisti{_periodo_pu}"
 
-        if not df_pu_global.empty:
-            # KPI calcolati sul df filtrato (reattivi a tutti i filtri)
-            tot_invoice_pu = df_pu_global[pu_amount].sum() if pu_amount in df_pu_global.columns else 0
-            tot_kg_pu      = df_pu_global[pu_kg].sum()     if pu_kg     in df_pu_global.columns else 0
-            tot_orders_pu  = (df_pu_global['Purchase order'].nunique()
-                              if 'Purchase order' in df_pu_global.columns else 0)
-            avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
+        # KPI — sempre visibili; quando df_pu_global è vuoto i valori sono 0
+        tot_invoice_pu = df_pu_global[pu_amount].sum() if pu_amount in df_pu_global.columns else 0
+        tot_kg_pu      = df_pu_global[pu_kg].sum()     if pu_kg     in df_pu_global.columns else 0
+        tot_orders_pu  = (df_pu_global['Purchase order'].nunique()
+                          if 'Purchase order' in df_pu_global.columns else 0)
+        avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
 
-            # Banner "STORICO COMPLETO" quando il periodo selezionato non ha dati acquisti
-            # → spiega chiaramente perché i KPI non corrispondono al periodo della sidebar
-            _is_fallback = locals().get('_periodo_fallback', False)
-            if _is_fallback and d_start_pu and d_end_pu:
-                st.info(
-                    f"📊 **Dati mostrati: storico completo** "
-                    f"({d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}) — "
-                    f"il periodo selezionato in sidebar non ha transazioni acquisti."
-                )
+        render_kpi_cards([
+            {"title": "💸 Spesa Totale",
+             "value":    f"€ {tot_invoice_pu:,.0f}",
+             "subtitle": "Invoice Amount (importo fatturato)"},
+            {"title": "⚖️ Volume Totale",
+             "value":    f"{tot_kg_pu:,.0f} Kg",
+             "subtitle": "Kg Acquistati (Line amount / Purchase price)"},
+            {"title": "📦 Ordini Totali",
+             "value":    str(tot_orders_pu),
+             "subtitle": "N° ordini di acquisto univoci"},
+            {"title": "🏷️ Prezzo Medio",
+             "value":    f"€ {avg_price_kg:.4f}",
+             "subtitle": "€ per Kg (Invoice amount / Kg acq.)"},
+        ], card_class="purch-card")
 
-            _kpi_period = (f"{d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}"
-                           if d_start_pu and d_end_pu else "storico completo")
-
-            render_kpi_cards([
-                {"title": "💸 Spesa Totale",
-                 "value":    f"€ {tot_invoice_pu:,.0f}",
-                 "subtitle": f"Invoice Amount | {_kpi_period}"},
-                {"title": "⚖️ Volume Totale",
-                 "value":    f"{tot_kg_pu:,.0f} Kg",
-                 "subtitle": "Kg Acquistati (Line amount / Purchase price)"},
-                {"title": "📦 Ordini Totali",
-                 "value":    str(tot_orders_pu),
-                 "subtitle": "N° ordini di acquisto univoci"},
-                {"title": "🏷️ Prezzo Medio",
-                 "value":    f"€ {avg_price_kg:.4f}",
-                 "subtitle": "€ per Kg (Invoice amount / Kg acq.)"},
-            ], card_class="purch-card")
+        if df_pu_global.empty:
+            st.info("📭 Nessun dato da visualizzare per il periodo selezionato.")
+        else:
 
             st.divider()
             c1, c2 = st.columns(2)
