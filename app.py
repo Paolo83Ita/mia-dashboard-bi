@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v77.0 - Fix: trace "trace 2" in legend, guard df.empty in agg/trend, overflow-x mobile, .copy() rimosso in _monthly_trend: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v78.0 - Fix trace 2: ridotto da 4 a 3 trace (rimosso shadow layer ridondante); fix coerenza KPI: banner storico con periodo effettivo; pulizia: rimosso _COL_DT obsoleto, dropna duplicato, commento v36: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v77.0",
+    page_title="EITA Analytics Pro v78.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -389,7 +389,7 @@ def smart_analyze_and_clean(df_in: pd.DataFrame, page_type: str = "Sales") -> pd
                 1 for s in sample
                 if len(s) > 0 and sum(c.isdigit() for c in s) / len(s) >= 0.5
             )
-            # FIX (v36): guard page_type != "Purchase" ripristinato
+            # guard page_type != "Purchase": evita conversione numerica su codici fornitore/part number
             looks_numeric = (numeric_like / len(sample) >= 0.6) and (page_type != "Purchase")
         else:
             looks_numeric = True
@@ -909,7 +909,6 @@ _COL_EU = 'Importo_Netto_TotRiga'  # colonna € netti
 _COL_CT = 'Qta_Cartoni_Ordinato'   # colonna cartoni
 _COL_AT = 'Descr_Articolo'         # colonna articolo
 _COL_CL = 'Decr_Cliente_Fat'       # colonna cliente fatturazione
-_COL_DT = 'Data_Fattura'            # colonna data principale (fatturazione)
 # Ordine di preferenza per il rilevamento colonna data nel file From_order_to_invoice:
 # Data_Fattura → Data_Ordine → Data_Consegna → Data_DDT → Data_Partenza → Data_Documento
 _COL_DT_FALLBACKS = [
@@ -3071,12 +3070,13 @@ elif page == "📦 Analisi Acquisti":
                             f"al **{_max_d.strftime('%d/%m/%Y')}**.\n\n"
                             f"Modifica il periodo nella sidebar per visualizzare i dati acquisti."
                         )
-                        # Usa lo storico completo della divisione selezionata
-                        # Aggiorna d_start/end al range reale dei dati (non G_START/G_END vuoto)
+                        # Aggiorna d_start/end al range REALE dei dati (non al periodo vuoto richiesto)
                         d_start_pu, d_end_pu = _min_d.date(), _max_d.date()
-                        # df_pu_global rimane invariato (storico completo)
+                        _periodo_fallback = True   # flag: i dati mostrati sono storici, non del periodo selezionato
+                        # df_pu_global rimane invariato (storico completo della divisione)
                     else:
                         df_pu_global = df_filtered_period
+                        _periodo_fallback = False
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
@@ -3158,13 +3158,25 @@ elif page == "📦 Analisi Acquisti":
             tot_kg_pu      = df_pu_global[pu_kg].sum()     if pu_kg     in df_pu_global.columns else 0
             tot_orders_pu  = (df_pu_global['Purchase order'].nunique()
                               if 'Purchase order' in df_pu_global.columns else 0)
-            # Prezzo medio = Invoice amount / Kg acquistati (dalla legenda)
             avg_price_kg   = (tot_invoice_pu / tot_kg_pu) if tot_kg_pu > 0 else 0
+
+            # Banner "STORICO COMPLETO" quando il periodo selezionato non ha dati acquisti
+            # → spiega chiaramente perché i KPI non corrispondono al periodo della sidebar
+            _is_fallback = locals().get('_periodo_fallback', False)
+            if _is_fallback and d_start_pu and d_end_pu:
+                st.info(
+                    f"📊 **Dati mostrati: storico completo** "
+                    f"({d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}) — "
+                    f"il periodo selezionato in sidebar non ha transazioni acquisti."
+                )
+
+            _kpi_period = (f"{d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}"
+                           if d_start_pu and d_end_pu else "storico completo")
 
             render_kpi_cards([
                 {"title": "💸 Spesa Totale",
                  "value":    f"€ {tot_invoice_pu:,.0f}",
-                 "subtitle": "Invoice Amount (importo fatturato)"},
+                 "subtitle": f"Invoice Amount | {_kpi_period}"},
                 {"title": "⚖️ Volume Totale",
                  "value":    f"{tot_kg_pu:,.0f} Kg",
                  "subtitle": "Kg Acquistati (Line amount / Purchase price)"},
@@ -3181,14 +3193,8 @@ elif page == "📦 Analisi Acquisti":
 
             with c1:
                 st.subheader("📅 Trend Spesa nel Tempo")
-                if pu_date in df_pu_global.columns:
-                    if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
-                        df_pu_global[pu_date] = pd.to_datetime(
-                            df_pu_global[pu_date], dayfirst=True, errors='coerce'
-                        )
-                        df_pu_global = df_pu_global.dropna(subset=[pu_date])
-
-                if (pu_date and pu_amount
+                # Nota: la colonna pu_date è già stata convertita e dropna-ta nella sezione filtri sopra
+                if (pu_date and pu_amount and pu_date in df_pu_global.columns
                         and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date])
                         and not df_pu_global.empty):
                     try:
@@ -3197,29 +3203,21 @@ elif page == "📦 Analisi Acquisti":
                                     .sum().reset_index())
                         fig_trend = go.Figure()
 
-                        # Layer 1 — riempimento profondo (effetto ombra area)
+                        # trace[0] — area fill (solo colore, no legend)
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             fill='tozeroy',
-                            fillcolor='rgba(56,249,215,0.05)',
+                            fillcolor='rgba(67,233,123,0.18)',
                             line=dict(color='rgba(0,0,0,0)', width=0),
                             mode='lines', showlegend=False, hoverinfo='skip',
                         ))
-                        # Layer 2 — area principale con fill luminoso
-                        fig_trend.add_trace(go.Scatter(
-                            x=trend_pu[pu_date], y=trend_pu[pu_amount],
-                            fill='tozeroy',
-                            fillcolor='rgba(67,233,123,0.22)',
-                            line=dict(color='#43e97b', width=3.5, shape='spline', smoothing=1.1),
-                            mode='lines', showlegend=False, hoverinfo='skip',
-                        ))
-                        # Layer 3 — linea + marker con glow effect
+                        # trace[1] — linea principale + marker + etichette (compare in legend)
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             mode='lines+markers+text',
                             name='💸 Spesa €',
                             showlegend=True,
-                            line=dict(color='#38f9d7', width=2, shape='spline', smoothing=1.1),
+                            line=dict(color='#38f9d7', width=2.5, shape='spline', smoothing=1.1),
                             marker=dict(
                                 size=10, color='#43e97b',
                                 line=dict(color='white', width=2.5),
@@ -3236,7 +3234,7 @@ elif page == "📦 Analisi Acquisti":
                             ),
                         ))
 
-                        # Aggiungi linea media mobile (rolling 3 mesi) se abbastanza dati
+                        # trace[2] — media mobile rolling 3 mesi (solo se dati sufficienti)
                         if len(trend_pu) >= 3:
                             roll_avg = trend_pu[pu_amount].rolling(3, center=True, min_periods=1).mean()
                             fig_trend.add_trace(go.Scatter(
@@ -3255,7 +3253,7 @@ elif page == "📦 Analisi Acquisti":
                                 tickfont=dict(size=10),
                             ),
                             yaxis=dict(
-                                title="€ Fatturato", showgrid=True,
+                                title="€ Spesa", showgrid=True,
                                 gridcolor='rgba(67,233,123,0.1)',
                                 tickprefix="€ ", tickfont=dict(size=10),
                                 zeroline=False,
