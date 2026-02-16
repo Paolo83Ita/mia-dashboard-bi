@@ -3699,14 +3699,12 @@ elif page == "🏭 Analisi Acquisti":
             # ── Livello Servizio riga per riga (Received / Order) ─────────
             _ord_col = 'Order quantity'
             _rec_col = 'Received quantity'
-            if _ord_col in df_final.columns and _rec_col in df_final.columns:
+            _has_svc_cols = _ord_col in df_final.columns and _rec_col in df_final.columns
+            if _has_svc_cols:
                 df_final = df_final.copy()
                 df_final['% Livello Servizio'] = (
                     (df_final[_rec_col] / df_final[_ord_col].replace(0, float('nan'))) * 100
                 ).clip(0, 100).round(1)
-                col_cfg['% Livello Servizio'] = st.column_config.ProgressColumn(
-                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
-                )
 
             # CAP DISPLAY: Streamlit renderizza tutto in DOM → troppo RAM con 100k+ righe
             _MAX_ROWS_DISPLAY = 5000
@@ -3757,6 +3755,12 @@ elif page == "🏭 Analisi Acquisti":
                 elif tip:
                     col_cfg[c] = st.column_config.TextColumn(c, help=tip)
 
+            # Aggiunge ProgressColumn Livello Servizio DOPO col_cfg = {} (fix NameError)
+            if _has_svc_cols:
+                col_cfg['% Livello Servizio'] = st.column_config.ProgressColumn(
+                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                )
+
             st.dataframe(
                 df_final,
                 column_config=col_cfg, height=520, hide_index=True
@@ -3776,4 +3780,3 @@ elif page == "🏭 Analisi Acquisti":
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
                 "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
-
