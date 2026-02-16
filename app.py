@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v87.0 - Top Fornitori legenda sotto (no overlap); Metriche+Tabella full-width P2; Mostra/Nascondi tutte colonne sorgente P1+P2; GDPR S.p.A.; fix adattamento schermo: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v88.0 - Top Fornitori etichette outside leggibili; Trend legenda sotto + label grandi; caption data sotto titolo in tutti i grafici: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v87.0",
+    page_title="EITA Analytics Pro v88.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2189,6 +2189,7 @@ if page == "📊 Vendite & Fatturazione":
             ])
 
             st.markdown("### 🧭 Analisi Esplorativa (Drill-Down)")
+            st.caption(f"📅 Colonna data: **{col_data}**")
             col_l, col_r = st.columns([1.2, 1.8], gap="large")
 
             cust_totals      = df_global.groupby(col_customer)[col_euro].sum().sort_values(ascending=False)
@@ -2325,7 +2326,6 @@ if page == "📊 Vendite & Fatturazione":
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
                     _plot(fig)
-                    st.caption(f"📅 Data: **{col_data}**")
 
             # ── COL_R: Esplosione Prodotto o Dettaglio Cliente ──────────────
             with col_r:
@@ -2657,6 +2657,7 @@ elif page == "🏷️ Analisi Customer Promo":
 
             with col_pl:
                 st.subheader("📊 Vendite: Promo vs Normale")
+                st.caption(f"📅 Colonna data: **{p_start}** (Data Inizio Sell-In)")
                 # _df_vendite è già filtrato (G_START/G_END, entity EITA) e classificato
                 # con _classifica_vendita() — IDENTICO a quello usato dal contesto AI.
                 if _df_vendite is not None and not _df_vendite.empty:
@@ -2737,7 +2738,6 @@ elif page == "🏷️ Analisi Customer Promo":
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
                         _plot(fig_p)
-                        st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
 
                 else:
@@ -2745,6 +2745,7 @@ elif page == "🏷️ Analisi Customer Promo":
 
             with col_pr:
                 st.subheader("Top Promozioni (Forecast vs Actual)")
+                st.caption(f"📅 Colonna data: **{p_start}** (Data Inizio Sell-In)")
                 promo_desc_col = guesses_p.get('promo_desc') or 'Descrizione Promozione'
                 if promo_desc_col in df_pglobal.columns:
                     top_promos = (
@@ -2810,7 +2811,6 @@ elif page == "🏷️ Analisi Customer Promo":
                         ),
                     )
                     _plot(fig)
-                    st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
 
             # ── Metriche + Tabella — full width (fuori dalle colonne) ──
@@ -3302,6 +3302,7 @@ elif page == "🏭 Analisi Acquisti":
 
             with c1:
                 st.subheader("📅 Trend Spesa nel Tempo")
+                st.caption(f"📅 Colonna data: **{pu_date}**")
                 # Nota: la colonna pu_date è già stata convertita e dropna-ta nella sezione filtri sopra
                 if (pu_date and pu_amount and pu_date in df_pu_global.columns
                         and pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date])
@@ -3320,7 +3321,7 @@ elif page == "🏭 Analisi Acquisti":
                             line=dict(color='rgba(0,0,0,0)', width=0),
                             mode='lines', showlegend=False, hoverinfo='skip',
                         ))
-                        # trace[1] — linea principale + marker + etichette (compare in legend)
+                        # trace[1] — linea principale + marker + etichette
                         fig_trend.add_trace(go.Scatter(
                             x=trend_pu[pu_date], y=trend_pu[pu_amount],
                             mode='lines+markers+text',
@@ -3333,10 +3334,12 @@ elif page == "🏭 Analisi Acquisti":
                                 symbol='circle',
                             ),
                             text=trend_pu[pu_amount].apply(
-                                lambda v: f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}"
+                                lambda v: f"€{v/1e6:.1f}M" if v >= 1e6
+                                          else (f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}")
                             ),
                             textposition='top center',
-                            textfont=dict(size=9, color='rgba(255,255,255,0.75)'),
+                            textfont=dict(size=11, color='rgba(255,255,255,0.9)',
+                                          family='Arial Bold'),
                             hovertemplate=(
                                 "📅 <b>%{x|%B %Y}</b><br>"
                                 "💸 € %{y:,.2f}<extra></extra>"
@@ -3369,16 +3372,17 @@ elif page == "🏭 Analisi Acquisti":
                             ),
                             paper_bgcolor='rgba(0,0,0,0)',
                             plot_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(l=0, r=0, t=10, b=10),
+                            margin=dict(l=0, r=10, t=30, b=55),  # t alto per label, b per legenda
                             showlegend=True,
                             legend=dict(
-                                x=0.01, y=0.99, font=dict(size=9),
-                                bgcolor='rgba(0,0,0,0.2)', bordercolor='rgba(255,255,255,0.1)',
-                                borderwidth=1,
+                                orientation='h',
+                                x=0.5, xanchor='center',
+                                y=-0.18, yanchor='top',    # sotto il grafico
+                                font=dict(size=10),
+                                bgcolor='rgba(0,0,0,0)',
                             ),
                         )
                         _plot(fig_trend)
-                        st.caption(f"📅 Data: **{pu_date}**")
                     except Exception as e:
                         st.warning(f"Impossibile generare grafico temporale: {e}")
                 else:
@@ -3386,6 +3390,7 @@ elif page == "🏭 Analisi Acquisti":
 
             with c2:
                 st.subheader("🏆 Top Fornitori (per Spesa)")
+                st.caption(f"📅 Colonna data: **{pu_date}**")
                 if pu_supp in df_pu_global.columns and pu_amount in df_pu_global.columns:
                     top_supp = (df_pu_global
                                 .groupby(pu_supp)[pu_amount]
@@ -3411,28 +3416,28 @@ elif page == "🏭 Analisi Acquisti":
                     ]
 
                     # ── Top Fornitori: barre raggruppate — € sopra, Kg sotto per fornitore ──
-                    # barmode='group' + orientation='h' → per ogni fornitore 2 barre verticali
                     _has_kg = pu_kg in top_supp_full.columns
                     fig_supp = go.Figure()
 
-                    # Barra 1 — Spesa € (colori sfumati per valore)
+                    # Barra 1 — Spesa € — etichetta fuori barra, sempre leggibile
                     fig_supp.add_trace(go.Bar(
                         y=top_supp_full[pu_supp],
                         x=top_supp_full[pu_amount],
                         orientation='h',
                         name='💸 Spesa €',
                         marker=dict(color=bar_cols_s,
-                                    line=dict(color='rgba(255,255,255,0.35)', width=0.8)),
+                                    line=dict(color='rgba(255,255,255,0.3)', width=0.8)),
                         text=top_supp_full[pu_amount].apply(
                             lambda v: f"€ {v/1e6:.2f}M" if v >= 1e6
                                       else (f"€ {v/1e3:.0f}K" if v >= 1000 else f"€ {v:.0f}")
                         ),
-                        textposition='inside', insidetextanchor='end',
-                        textfont=dict(size=11, color='white', family='Arial Bold'),
+                        textposition='outside',
+                        textfont=dict(size=11, family='Arial Bold'),
+                        cliponaxis=False,
                         hovertemplate="<b>%{y}</b><br>💸 € %{x:,.0f}<extra></extra>",
                     ))
 
-                    # Barra 2 — Volume Kg (arancio sfumato)
+                    # Barra 2 — Volume Kg — etichetta fuori barra
                     if _has_kg:
                         _kg_norm   = top_supp_full[pu_kg] / (top_supp_full[pu_kg].max() + 1e-9)
                         _kg_colors = [f"rgba(247,{int(151+55*v)},{int(30+70*v)},0.82)"
@@ -3443,14 +3448,16 @@ elif page == "🏭 Analisi Acquisti":
                             orientation='h',
                             name='⚖️ Volume Kg',
                             marker=dict(color=_kg_colors,
-                                        line=dict(color='rgba(255,255,255,0.35)', width=0.8)),
+                                        line=dict(color='rgba(255,255,255,0.3)', width=0.8)),
                             text=top_supp_full[pu_kg].apply(
                                 lambda v: f"{v/1e3:.0f}K Kg" if v >= 1000 else f"{v:.0f} Kg"
                             ),
-                            textposition='inside', insidetextanchor='end',
-                            textfont=dict(size=11, color='white', family='Arial'),
+                            textposition='outside',
+                            textfont=dict(size=10, family='Arial'),
+                            cliponaxis=False,
                             hovertemplate="<b>%{y}</b><br>⚖️ %{x:,.0f} Kg<extra></extra>",
                         ))
+
 
                     # Altezza dinamica: 2 barre per fornitore se Kg presente
                     _rows_per_sup = 2 if _has_kg else 1
@@ -3470,7 +3477,7 @@ elif page == "🏭 Analisi Acquisti":
                         ),
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=10, r=20, t=10, b=50),  # t piccolo, b largo per la legenda
+                        margin=dict(l=10, r=110, t=10, b=50),  # r largo per etichette outside
                         xaxis=dict(
                             showgrid=True, gridcolor='rgba(130,150,200,0.15)',
                             zeroline=False, tickformat=",.0f",
@@ -3482,7 +3489,6 @@ elif page == "🏭 Analisi Acquisti":
                     )
 
                     _plot(fig_supp)
-                    st.caption(f"📅 Data: **{pu_date}**")
 
             # --- DETTAGLIO RIGHE ACQUISTO ---
             st.subheader("📋 Dettaglio Righe Acquisto")
