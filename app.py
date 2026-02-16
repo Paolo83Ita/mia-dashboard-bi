@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v81.0 - Page 3: rimosso secondo selettore periodo (confondeva); logica smart rimane invisibile (intersezione globale↔file, pre-check, expand automatico); caption discreta se periodo esteso: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v82.0 - Page 3: filtro periodo uguale a Page 1/2 (G_START/G_END diretto); rimossa logica smart che sovrascriveva la selezione; empty = KPI 0 + warning con range disponibile: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v81.0",
+    page_title="EITA Analytics Pro v82.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -3022,12 +3022,9 @@ elif page == "📦 Analisi Acquisti":
             df_pu_global = df_pu_global[df_pu_global[pu_div].astype(str) == sel_div_pu]
 
         # --- Periodo di Analisi ---
-        # Page 3 usa il selettore globale come punto di partenza.
-        # Logica smart: se il periodo globale non ha dati acquisti
-        # → espande automaticamente al range disponibile nel file.
-        # Nessun secondo selettore in sidebar: l'utente usa quello globale.
+        # Filtra per G_START/G_END esattamente come Page 1 e Page 2.
+        # Se il risultato è vuoto → KPI=0 + warning con range disponibile nel file.
         d_start_pu = d_end_pu = None
-        _pu_period_is_expanded = False   # True se il range è stato espanso rispetto al globale
         if pu_date in df_pu_global.columns:
             if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
                 df_pu_global[pu_date] = pd.to_datetime(
@@ -3038,33 +3035,23 @@ elif page == "📦 Analisi Acquisti":
             if pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]) and not df_pu_global.empty:
                 _min_d = df_pu_global[pu_date].min()
                 _max_d = df_pu_global[pu_date].max()
-                if pd.notnull(_min_d) and pd.notnull(_max_d):
-                    _pu_file_start = _min_d.date()
-                    _pu_file_end   = _max_d.date()
 
-                    # Step 1: usa intersezione globale ↔ file se esiste
-                    if G_START <= _pu_file_end and G_END >= _pu_file_start:
-                        _def_s = max(G_START, _pu_file_start)
-                        _def_e = min(G_END,   _pu_file_end)
-                    else:
-                        _def_s, _def_e = _pu_file_start, _pu_file_end
+                # Applica direttamente il filtro globale (stesso pattern Page 1/2)
+                d_start_pu, d_end_pu = G_START, G_END
+                df_pu_global = df_pu_global[
+                    (df_pu_global[pu_date].dt.date >= d_start_pu) &
+                    (df_pu_global[pu_date].dt.date <= d_end_pu)
+                ]
 
-                    # Step 2: pre-check — se l'intersezione non ha righe reali, usa range completo
-                    _pre_check = df_pu_global[
-                        (df_pu_global[pu_date].dt.date >= _def_s) &
-                        (df_pu_global[pu_date].dt.date <= _def_e)
-                    ]
-                    if _pre_check.empty:
-                        _def_s, _def_e = _pu_file_start, _pu_file_end
-                        _pu_period_is_expanded = True
-
-                    d_start_pu, d_end_pu = _def_s, _def_e
-
-                    # Applica filtro al df
-                    df_pu_global = df_pu_global[
-                        (df_pu_global[pu_date].dt.date >= d_start_pu) &
-                        (df_pu_global[pu_date].dt.date <= d_end_pu)
-                    ]
+                # Se vuoto: avvisa con range disponibile (non sovrascrive la selezione)
+                if df_pu_global.empty and pd.notnull(_min_d) and pd.notnull(_max_d):
+                    st.warning(
+                        f"⚠️ Nessun dato acquisti nel periodo selezionato "
+                        f"(**{G_START.strftime('%d/%m/%Y')} – {G_END.strftime('%d/%m/%Y')}**). "
+                        f"Dati disponibili dal **{_min_d.strftime('%d/%m/%Y')}** "
+                        f"al **{_max_d.strftime('%d/%m/%Y')}** — "
+                        f"modifica il **Periodo Analisi** in sidebar."
+                    )
 
         # --- Filtro Fornitore ---
         if pu_supp in df_pu_global.columns:
@@ -3167,11 +3154,10 @@ elif page == "📦 Analisi Acquisti":
              "subtitle": "€ per Kg (Invoice amount / Kg acq.)"},
         ], card_class="purch-card")
 
-        # Caption discreta: mostra il periodo effettivo solo se diverso dal globale
-        if _pu_period_is_expanded and d_start_pu and d_end_pu:
+        # Caption periodo effettivo sotto i KPI
+        if d_start_pu and d_end_pu and not df_pu_global.empty:
             st.caption(
-                f"📅 Periodo acquisti: **{d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}** "
-                f"(il file non ha dati nel periodo globale selezionato)"
+                f"📅 Periodo: **{d_start_pu.strftime('%d/%m/%Y')} – {d_end_pu.strftime('%d/%m/%Y')}**"
             )
 
         if df_pu_global.empty:
