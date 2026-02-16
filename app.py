@@ -15,13 +15,24 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v83.0 - Fix root cause data acquisti: priorità colonna data = Invoice date > Date of receipt > Purchase order date (ordine emesso settimane prima, causava periodo apparentemente vuoto): contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v84.0 - Cache busting mobile; KPI colore tema chiaro; emoji 🎁→🏷️ Promo, 📦→🏭 Acquisti; caption tipo data sotto ogni grafico; tabella Promo full-width; Top Fornitori leggibile con Kg separato: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v83.0",
+    page_title="EITA Analytics Pro v84.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
+)
+
+# ── CACHE BUSTING — previene rendering stale su Chrome mobile/Android ────────
+# Inietta header HTTP no-cache + meta pragma via custom HTML.
+# Streamlit non espone st.response_headers, quindi usiamo il meta tag HTML
+# che istruisce browser e proxy a non servire versioni cached della pagina.
+st.markdown(
+    '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">'
+    '<meta http-equiv="Pragma" content="no-cache">'
+    '<meta http-equiv="Expires" content="0">',
+    unsafe_allow_html=True,
 )
 
 st.markdown("""
@@ -77,6 +88,12 @@ st.markdown("""
   .kpi-value    { font-size:1.9rem; font-weight:800; line-height:1.2;
                   color:#ffffff !important;
                   text-shadow: 0 2px 8px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.5); }
+  /* Tema chiaro: il valore usa il colore accent (stesso della barra sinistra) invece di bianco */
+  @media (prefers-color-scheme: light) {
+    .kpi-value { color:#0072ff !important; text-shadow: none; }
+    .kpi-card.promo-card .kpi-value { color:#ff6b9d !important; }
+    .kpi-card.purch-card .kpi-value { color:#1a9e5a !important; }
+  }
   .kpi-subtitle { font-size:0.76rem; opacity:0.55; margin-top:0.35rem; }
 
   /* ---- CHARTS ---- */
@@ -1901,7 +1918,7 @@ st.sidebar.title("🖥️ EITA Dashboard")
 st.sidebar.markdown("**Menu:**")
 page = st.sidebar.radio(
     "Navigazione",
-    ["📊 Vendite & Fatturazione", "🎁 Analisi Customer Promo", "📦 Analisi Acquisti"],
+    ["📊 Vendite & Fatturazione", "🏷️ Analisi Customer Promo", "🏭 Analisi Acquisti"],
     label_visibility="collapsed"
 )
 st.sidebar.markdown("---")
@@ -2307,8 +2324,7 @@ if page == "📊 Vendite & Fatturazione":
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
                     _plot(fig)
-
-            with col_r:
+                    st.caption(f"📅 Data: **{col_data}**")
                 if "TUTTI" in sel_target:
                     st.markdown("#### 💥 Esplosione Prodotto (Master-Detail)")
                     st.info("💡 Usa il menu a tendina per il drill-down.")
@@ -2441,8 +2457,8 @@ if page == "📊 Vendite & Fatturazione":
 # ==========================================================================
 # PAGINA 2: CUSTOMER PROMO
 # ==========================================================================
-elif page == "🎁 Analisi Customer Promo":
-    st.title("🎁 Analisi Customer Promo")
+elif page == "🏷️ Analisi Customer Promo":
+    st.title("🏷️ Analisi Customer Promo")
 
     df_promo_processed = None
 
@@ -2673,6 +2689,7 @@ elif page == "🎁 Analisi Customer Promo":
                             paper_bgcolor='rgba(0,0,0,0)',
                         )
                         _plot(fig_p)
+                        st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
                         # ── Dettaglio Metriche ───────────────────────────────────
                         st.markdown("#### 📉 Dettaglio Metriche")
@@ -2777,7 +2794,7 @@ elif page == "🎁 Analisi Customer Promo":
                                 '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
                                 '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
                                 _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
-                            }, hide_index=True, height=400
+                            }, hide_index=True
                         , use_container_width=True)
                         # Download Excel
                         if not _tbl_final.empty:
@@ -2858,6 +2875,7 @@ elif page == "🎁 Analisi Customer Promo":
                         ),
                     )
                     _plot(fig)
+                    st.caption(f"📅 Data: **{p_start}** (Data Inizio Sell-In)")
 
             st.subheader("📋 Dettaglio Iniziative Promozionali")
 
@@ -2924,8 +2942,8 @@ elif page == "🎁 Analisi Customer Promo":
 # ==========================================================================
 # PAGINA 3: ANALISI ACQUISTI
 # ==========================================================================
-elif page == "📦 Analisi Acquisti":
-    st.title("📦 Analisi Acquisti (Purchase History)")
+elif page == "🏭 Analisi Acquisti":
+    st.title("🏭 Analisi Acquisti (Purchase History)")
 
     df_purch_processed = None
 
@@ -3245,6 +3263,7 @@ elif page == "📦 Analisi Acquisti":
                             ),
                         )
                         _plot(fig_trend)
+                        st.caption(f"📅 Data: **{pu_date}**")
                     except Exception as e:
                         st.warning(f"Impossibile generare grafico temporale: {e}")
                 else:
@@ -3277,77 +3296,83 @@ elif page == "📦 Analisi Acquisti":
                     ]
 
                     fig_supp = go.Figure()
-                    # Shadow layer
-                    fig_supp.add_trace(go.Bar(
-                        y=top_supp_full[pu_supp],
-                        x=top_supp_full[pu_amount] * 1.007,
-                        orientation='h', showlegend=False,
-                        marker=dict(color='rgba(0,0,0,0.18)', line=dict(width=0)),
-                        hoverinfo='skip',
-                    ))
-                    # Main bars — importo
+
+                    # Barra €  (principale, sopra)
                     fig_supp.add_trace(go.Bar(
                         y=top_supp_full[pu_supp],
                         x=top_supp_full[pu_amount],
                         orientation='h',
-                        name='Importo €',
-                        marker=dict(color=bar_cols_s,
-                                    line=dict(color='rgba(255,255,255,0.4)', width=1.5)),
+                        name='💸 Spesa €',
+                        marker=dict(
+                            color=bar_cols_s,
+                            line=dict(color='rgba(255,255,255,0.5)', width=1),
+                        ),
                         text=top_supp_full[pu_amount].apply(
-                            lambda v: f"€{v/1e3:.0f}K" if v >= 1000 else f"€{v:.0f}"
+                            lambda v: f"€ {v/1e6:.2f}M" if v >= 1e6
+                                      else (f"€ {v/1e3:.0f}K" if v >= 1000 else f"€ {v:.0f}")
                         ),
-                        textposition='inside', insidetextanchor='middle',
-                        textfont=dict(size=11, color='white', family='Arial Black'),
-                        hovertemplate=(
-                            "<b>%{y}</b><br>"
-                            "💸 € %{x:,.2f}<extra></extra>"
-                        ),
+                        textposition='outside',
+                        textfont=dict(size=12, family='Arial Bold'),
+                        hovertemplate="<b>%{y}</b><br>💸 € %{x:,.0f}<extra></extra>",
                     ))
-                    # Markers Kg sovrapposti (scatter sull'asse X per riferimento visivo)
+
+                    # Barra Kg (secondaria, sotto) — asse X2 separato
                     if pu_kg in top_supp_full.columns:
-                        # Normalizza Kg alla stessa scala importo per visualizzazione
-                        kg_max   = top_supp_full[pu_kg].max()
-                        amt_max  = top_supp_full[pu_amount].max()
-                        kg_scaled = top_supp_full[pu_kg] * (amt_max / (kg_max + 1e-9)) * 0.85
-                        fig_supp.add_trace(go.Scatter(
+                        fig_supp.add_trace(go.Bar(
                             y=top_supp_full[pu_supp],
-                            x=kg_scaled,
-                            mode='markers',
-                            name='Kg (scala relativa)',
+                            x=top_supp_full[pu_kg],
+                            orientation='h',
+                            name='⚖️ Kg',
+                            xaxis='x2',
                             marker=dict(
-                                symbol='diamond', size=10,
-                                color='#f7971e',
-                                line=dict(color='white', width=1.5),
+                                color='rgba(247,151,30,0.75)',
+                                line=dict(color='rgba(255,255,255,0.4)', width=1),
                             ),
-                            hovertemplate=(
-                                "<b>%{y}</b><br>"
-                                "⚖️ Kg: %{customdata:,.0f}<extra></extra>"
+                            text=top_supp_full[pu_kg].apply(
+                                lambda v: f"{v/1e3:.0f}K Kg" if v >= 1000 else f"{v:.0f} Kg"
                             ),
-                            customdata=top_supp_full[pu_kg],
+                            textposition='outside',
+                            textfont=dict(size=11, family='Arial'),
+                            hovertemplate="<b>%{y}</b><br>⚖️ %{x:,.0f} Kg<extra></extra>",
                         ))
+                        has_kg_axis = True
+                    else:
+                        has_kg_axis = False
+
+                    # Altezza dinamica: più fornitori → più spazio
+                    _h_supp = max(380, n_sup * 68)
 
                     fig_supp.update_layout(
-                        height=440, barmode='overlay',
+                        height=_h_supp,
+                        barmode='group',
+                        bargap=0.22,
+                        bargroupgap=0.08,
                         yaxis=dict(
                             autorange="reversed", showgrid=False,
-                            tickfont=dict(size=10),
+                            tickfont=dict(size=11),
                         ),
                         xaxis=dict(
-                            showgrid=True,
+                            title="Spesa (€)", showgrid=True,
                             gridcolor='rgba(0,198,255,0.12)',
-                            tickprefix="€ ",
-                            zeroline=False,
+                            tickprefix="€ ", zeroline=False,
+                            side='bottom',
                         ),
+                        **({"xaxis2": dict(
+                            title="Volume (Kg)", showgrid=False,
+                            overlaying='x', side='top',
+                            zeroline=False, showticklabels=False,
+                        )} if has_kg_axis else {}),
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=0, r=10, t=20, b=10),
+                        margin=dict(l=10, r=90, t=36, b=36),
                         showlegend=True,
                         legend=dict(
-                            orientation='h', x=0.0, y=1.0,
-                            font=dict(size=9), bgcolor='rgba(0,0,0,0.15)',
+                            orientation='h', x=0.0, y=1.05,
+                            font=dict(size=10), bgcolor='rgba(0,0,0,0)',
                         ),
                     )
                     _plot(fig_supp)
+                    st.caption(f"📅 Data: **{pu_date}**")
 
             # --- DETTAGLIO RIGHE ACQUISTO ---
             st.subheader("📋 Dettaglio Righe Acquisto")
