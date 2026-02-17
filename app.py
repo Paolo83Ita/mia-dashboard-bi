@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v94.0 - Fix crash: lazy .assign() no copy ogni render; fix NameError default vars; fix stale widget keys selected_val; width=stretch Streamlit 1.54: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v95.0 - Fix SVC valori vuoti in Righe sorgente: np.where su int64 (pandas 2.x replace(0,nan) inaffidabile); fix pd.to_datetime format=mixed; zero-delivery rows verificati OK: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v94.0",
+    page_title="EITA Analytics Pro v95.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -395,7 +395,7 @@ def smart_analyze_and_clean(df_in: pd.DataFrame, page_type: str = "Sales") -> pd
         # Rilevamento date
         if any(('/' in s or '-' in s) and len(s) >= 8 and s[0].isdigit() for s in sample):
             try:
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                df[col] = pd.to_datetime(df[col], format='mixed', dayfirst=True, errors='coerce')
                 continue
             except Exception:
                 pass
@@ -2512,11 +2512,15 @@ if page == "📊 Vendite & Fatturazione":
                     )
                 else:
                     # FIX CRASH: .assign() lazy — solo quando in Righe sorgente
+                    # FIX SVC VALORI VUOTI: np.where su int64 (pandas 2.x .replace(0,nan) inaffidabile)
                     _tree_src = (
-                        df_tree_raw.assign(**{_SVC_COL: (
-                            df_tree_raw[col_cartons_del] /
-                            df_tree_raw[col_cartons].replace(0, float('nan')) * 100
-                        ).clip(0, 100).round(1)})
+                        df_tree_raw.assign(**{_SVC_COL: np.where(
+                            df_tree_raw[col_cartons] > 0,
+                            (df_tree_raw[col_cartons_del] /
+                             df_tree_raw[col_cartons] * 100
+                            ).clip(0, 100).round(1),
+                            np.nan
+                        )})
                         if _has_svc else df_tree_raw
                     )
                     _master_src_df_shown = (
@@ -2622,11 +2626,15 @@ if page == "📊 Vendite & Fatturazione":
                         )
                     else:
                         # FIX CRASH: lazy — .assign() solo quando in Righe sorgente
+                        # FIX SVC VALORI VUOTI: np.where su int64 (pandas 2.x .replace(0,nan) inaffidabile)
                         _detail_src = (
-                            detail_df.assign(**{_SVC_COL: (
-                                detail_df[col_cartons_del] /
-                                detail_df[col_cartons].replace(0, float('nan')) * 100
-                            ).clip(0, 100).round(1)})
+                            detail_df.assign(**{_SVC_COL: np.where(
+                                detail_df[col_cartons] > 0,
+                                (detail_df[col_cartons_del] /
+                                 detail_df[col_cartons] * 100
+                                ).clip(0, 100).round(1),
+                                np.nan
+                            )})
                             if _has_svc else detail_df
                         )
                         _child_src_df_shown = (
@@ -3335,7 +3343,7 @@ elif page == "🏭 Analisi Acquisti":
         if pu_date in df_pu_global.columns:
             if not pd.api.types.is_datetime64_any_dtype(df_pu_global[pu_date]):
                 df_pu_global[pu_date] = pd.to_datetime(
-                    df_pu_global[pu_date], dayfirst=True, errors='coerce'
+                    df_pu_global[pu_date], format='mixed', dayfirst=True, errors='coerce'
                 )
             df_pu_global = df_pu_global.dropna(subset=[pu_date])
 
@@ -3823,9 +3831,11 @@ elif page == "🏭 Analisi Acquisti":
             _has_svc_cols = _ord_col in df_final.columns and _rec_col in df_final.columns
             if _has_svc_cols:
                 df_final = df_final.copy()
-                df_final['% Livello Servizio'] = (
-                    (df_final[_rec_col] / df_final[_ord_col].replace(0, float('nan'))) * 100
-                ).clip(0, 100).round(1)
+                df_final['% Livello Servizio'] = np.where(
+                    df_final[_ord_col] > 0,
+                    (df_final[_rec_col] / df_final[_ord_col] * 100).clip(0, 100).round(1),
+                    np.nan
+                )
 
             # CAP DISPLAY: Streamlit renderizza tutto in DOM → troppo RAM con 100k+ righe
             _MAX_ROWS_DISPLAY = 5000
