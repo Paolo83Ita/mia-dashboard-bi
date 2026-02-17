@@ -3864,3 +3864,4 @@ elif page == "🏭 Analisi Acquisti":
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
                 "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
+
