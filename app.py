@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v90.0 - Livello Servizio P3 righe + KPI P1/P3; Trend asse X adattivo (W/<90gg, ME/>90gg); tickfont +2pt; cache clear sidebar; Grok opt compact_context: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v91.0 - Expander Mostra/Nascondi Master; % Livello Servizio in tutti i selettori; Qta_Cartoni_Consegnato in target_numeric; @cache_data convert_df_to_excel: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v90.0",
+    page_title="EITA Analytics Pro v91.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -310,6 +310,7 @@ def load_dataset(file_id, modified_time):
 # 3. UTILITY FUNCTIONS
 # ==========================================================================
 
+@st.cache_data(show_spinner=False, max_entries=10)
 def convert_df_to_excel(df: pd.DataFrame) -> bytes:
     """Esporta un DataFrame in formato .xlsx con formattazione base."""
     output = io.BytesIO()
@@ -350,8 +351,8 @@ def smart_analyze_and_clean(df_in: pd.DataFrame, page_type: str = "Sales") -> pd
 
     if page_type == "Sales":
         target_numeric  = {'Importo_Netto_TotRiga', 'Peso_Netto_TotRiga',
-                           'Qta_Cartoni_Ordinato', 'Prezzo_Netto',
-                           'Sconto7_Promozionali', 'Sconto4_Free'}
+                           'Qta_Cartoni_Ordinato', 'Qta_Cartoni_Consegnato',
+                           'Prezzo_Netto', 'Sconto7_Promozionali', 'Sconto4_Free'}
         protected_text  = {'Descr_Cliente_Fat', 'Descr_Cliente_Dest', 'Descr_Articolo',
                            'Entity', 'Ragione Sociale', 'Decr_Cliente_Fat'}
     elif page_type == "Promo":
@@ -2442,22 +2443,42 @@ if page == "📊 Vendite & Fatturazione":
                 master_df = _add_service_level(
                     master_df, df_tree_raw, primary_col, col_cartons, col_cartons_del
                 )
+
+                # ── Mostra / Nascondi Colonne — Tabella Master ───────────────
+                _master_all_cols = list(master_df.columns)
+                _master_preset   = _master_all_cols   # default: tutte le colonne
+                with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
+                    _show_all_master = st.checkbox("⭐ Tutte le colonne",
+                                                    value=True, key="master_show_all")
+                    if _show_all_master:
+                        _master_vis = _master_all_cols
+                    else:
+                        _master_vis = st.multiselect(
+                            "Seleziona colonne:",
+                            options=_master_all_cols,
+                            default=_master_preset,
+                            key="master_cols_select"
+                        ) or _master_preset
+
+                _master_col_cfg = {
+                    primary_col:          st.column_config.TextColumn("Elemento Master"),
+                    col_cartons:          st.column_config.NumberColumn("CT Ord",    format="%d"),
+                    col_kg:               st.column_config.NumberColumn("Kg Tot",    format="%.0f"),
+                    col_euro:             st.column_config.NumberColumn("Valore",    format="€ %.2f"),
+                    'Valore Medio €/Kg':  st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
+                    'Valore Medio €/CT':  st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
+                    '% Livello Servizio': st.column_config.ProgressColumn(
+                        "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                    ),
+                }
+                _master_df_shown = master_df[[c for c in _master_vis if c in master_df.columns]]
                 st.dataframe(
-                    master_df,
-                    column_config={
-                        primary_col:             st.column_config.TextColumn("Elemento Master"),
-                        col_cartons:             st.column_config.NumberColumn("CT Ord",  format="%d"),
-                        col_kg:                  st.column_config.NumberColumn("Kg Tot",  format="%.0f"),
-                        col_euro:                st.column_config.NumberColumn("Valore",  format="€ %.2f"),
-                        'Valore Medio €/Kg':     st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
-                        'Valore Medio €/CT':     st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
-                        '% Livello Servizio':    st.column_config.ProgressColumn(
-                            "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
-                        ),
-                    }, hide_index=True, use_container_width=True)
+                    _master_df_shown,
+                    column_config=_master_col_cfg,
+                    hide_index=True, use_container_width=True)
                 st.download_button(
                     "📥 Scarica Tabella Master (.xlsx)",
-                    data=convert_df_to_excel(master_df),
+                    data=convert_df_to_excel(_master_df_shown),
                     file_name=f"Master_{primary_col}_{datetime.date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="btn_dl_master"
@@ -2482,8 +2503,8 @@ if page == "📊 Vendite & Fatturazione":
                     )
                     # ── Mostra / Nascondi Colonne (Child) ────────────────────
                     # Opzioni: tutte le colonne del file sorgente (detail_df)
-                    # Preset:  colonne aggregate (secondary, CT, Kg, €, ratios)
-                    _agg_default  = list(detail_agg.columns)
+                    # Preset aggregata: colonne aggregate + Livello Servizio se presente
+                    _agg_default  = list(detail_agg.columns)   # include '% Livello Servizio' se calcolato
                     _src_all_cols = [c for c in detail_df.columns
                                      if c not in (primary_col,)]  # escludi solo la col di filtro
                     with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
