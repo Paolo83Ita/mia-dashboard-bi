@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v91.0 - Expander Mostra/Nascondi Master; % Livello Servizio in tutti i selettori; Qta_Cartoni_Consegnato in target_numeric; @cache_data convert_df_to_excel: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v92.0 - Master expander Aggregata+Righe sorgente (tutte colonne df_tree_raw); fix colonne sorgente selezionabili Master: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v91.0",
+    page_title="EITA Analytics Pro v92.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2445,20 +2445,41 @@ if page == "📊 Vendite & Fatturazione":
                 )
 
                 # ── Mostra / Nascondi Colonne — Tabella Master ───────────────
-                _master_all_cols = list(master_df.columns)
-                _master_preset   = _master_all_cols   # default: tutte le colonne
+                # Aggregata: colonne aggregate calcolate (include % Livello Servizio)
+                # Righe sorgente: tutte le colonne di df_tree_raw (file originale)
+                _master_agg_default = list(master_df.columns)
+                _master_src_cols    = list(df_tree_raw.columns)  # tutte le colonne sorgente
+                _master_src_preset  = [c for c in [primary_col, secondary_col,
+                                                    col_cartons, col_cartons_del,
+                                                    col_kg, col_euro]
+                                        if c and c in _master_src_cols]
+
                 with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
-                    _show_all_master = st.checkbox("⭐ Tutte le colonne",
-                                                    value=True, key="master_show_all")
-                    if _show_all_master:
-                        _master_vis = _master_all_cols
+                    _master_view_mode = st.radio(
+                        "Modalità:", ["📊 Aggregata", "📄 Righe sorgente"],
+                        horizontal=True, key="master_view_mode"
+                    )
+                    if _master_view_mode == "📊 Aggregata":
+                        _show_all_master = st.checkbox("⭐ Tutte le colonne aggregate",
+                                                        value=True, key="master_show_all")
+                        if _show_all_master:
+                            _master_vis = _master_agg_default
+                        else:
+                            _master_vis = st.multiselect(
+                                "Seleziona colonne:", options=_master_agg_default,
+                                default=_master_agg_default, key="master_cols_select"
+                            ) or _master_agg_default
                     else:
-                        _master_vis = st.multiselect(
-                            "Seleziona colonne:",
-                            options=_master_all_cols,
-                            default=_master_preset,
-                            key="master_cols_select"
-                        ) or _master_preset
+                        _show_all_master_src = st.checkbox("⭐ Tutte le colonne sorgente",
+                                                            value=False, key="master_src_all")
+                        if _show_all_master_src:
+                            _master_src_vis = _master_src_cols
+                        else:
+                            _master_src_vis = st.multiselect(
+                                "Seleziona colonne sorgente:", options=_master_src_cols,
+                                default=[c for c in _master_src_preset if c in _master_src_cols],
+                                key="master_src_select"
+                            ) or _master_src_preset
 
                 _master_col_cfg = {
                     primary_col:          st.column_config.TextColumn("Elemento Master"),
@@ -2471,18 +2492,35 @@ if page == "📊 Vendite & Fatturazione":
                         "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
                     ),
                 }
-                _master_df_shown = master_df[[c for c in _master_vis if c in master_df.columns]]
-                st.dataframe(
-                    _master_df_shown,
-                    column_config=_master_col_cfg,
-                    hide_index=True, use_container_width=True)
-                st.download_button(
-                    "📥 Scarica Tabella Master (.xlsx)",
-                    data=convert_df_to_excel(_master_df_shown),
-                    file_name=f"Master_{primary_col}_{datetime.date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="btn_dl_master"
-                )
+
+                if _master_view_mode == "📊 Aggregata":
+                    _master_df_shown = master_df[[c for c in _master_vis if c in master_df.columns]]
+                    st.dataframe(
+                        _master_df_shown,
+                        column_config=_master_col_cfg,
+                        hide_index=True, use_container_width=True)
+                    st.download_button(
+                        "📥 Scarica Tabella Master (.xlsx)",
+                        data=convert_df_to_excel(_master_df_shown),
+                        file_name=f"Master_{primary_col}_{datetime.date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_dl_master"
+                    )
+                else:
+                    _master_src_df_shown = (
+                        df_tree_raw[[c for c in _master_src_vis if c in df_tree_raw.columns]]
+                        .reset_index(drop=True)
+                    )
+                    st.dataframe(
+                        _master_src_df_shown,
+                        hide_index=True, use_container_width=True)
+                    st.download_button(
+                        "📥 Scarica Righe Sorgente Master (.xlsx)",
+                        data=convert_df_to_excel(_master_src_df_shown),
+                        file_name=f"MasterSrc_{primary_col}_{datetime.date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="btn_dl_master_src"
+                    )
 
                 st.markdown("⬇️ **Seleziona un elemento per vedere il dettaglio:**")
                 selected_val = st.selectbox(
