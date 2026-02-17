@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v93.0 - % Livello Servizio per riga in Righe sorgente Master e Child; ProgressColumn in sorgente; _SVC_COL unificato: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v94.0 - Fix crash: lazy .assign() no copy ogni render; fix NameError default vars; fix stale widget keys selected_val; width=stretch Streamlit 1.54: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v93.0",
+    page_title="EITA Analytics Pro v94.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2410,7 +2410,7 @@ if page == "📊 Vendite & Fatturazione":
                             'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med",format="€ %.2f"),
                             'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med",format="€ %.2f"),
                         },
-                        hide_index=True, height=500, use_container_width=True)
+                        hide_index=True, height=500, width='stretch')
                     st.download_button(
                         "📥 Scarica Dettaglio Excel (.xlsx)",
                         data=convert_df_to_excel(ps),
@@ -2445,27 +2445,22 @@ if page == "📊 Vendite & Fatturazione":
                 )
 
                 # ── Mostra / Nascondi Colonne — Tabella Master ───────────────
-                # Aggregata: colonne aggregate calcolate (include % Livello Servizio)
-                # Righe sorgente: df_tree_raw + % Livello Servizio per riga se disponibile
-                _master_agg_default = list(master_df.columns)
-
-                # Calcola % Livello Servizio per riga sul sorgente (Consegnato/Ordinato)
                 _SVC_COL = '% Livello Servizio'
-                if (col_cartons_del and col_cartons_del in df_tree_raw.columns
-                        and col_cartons in df_tree_raw.columns):
-                    _tree_src = df_tree_raw.copy()
-                    _tree_src[_SVC_COL] = (
-                        (_tree_src[col_cartons_del] /
-                         _tree_src[col_cartons].replace(0, float('nan'))) * 100
-                    ).clip(0, 100).round(1)
-                else:
-                    _tree_src = df_tree_raw
-
-                _master_src_cols   = list(_tree_src.columns)           # include % Livello Servizio
+                _has_svc = (col_cartons_del and col_cartons_del in df_tree_raw.columns
+                             and col_cartons in df_tree_raw.columns)
+                _master_agg_default   = list(master_df.columns)
+                # Solo nomi colonne sorgente (zero overhead — non copia il df)
+                _master_src_col_names = list(df_tree_raw.columns)
+                if _has_svc and _SVC_COL not in _master_src_col_names:
+                    _master_src_col_names = _master_src_col_names + [_SVC_COL]
                 _master_src_preset = [c for c in [primary_col, secondary_col,
                                                    col_cartons, col_cartons_del,
                                                    col_kg, col_euro, _SVC_COL]
-                                      if c and c in _master_src_cols]
+                                      if c and c in _master_src_col_names]
+
+                # FIX NameError: default prima del blocco condizionale
+                _master_vis     = _master_agg_default
+                _master_src_vis = _master_src_preset or _master_src_col_names
 
                 with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
                     _master_view_mode = st.radio(
@@ -2475,43 +2470,39 @@ if page == "📊 Vendite & Fatturazione":
                     if _master_view_mode == "📊 Aggregata":
                         _show_all_master = st.checkbox("⭐ Tutte le colonne aggregate",
                                                         value=True, key="master_show_all")
-                        if _show_all_master:
-                            _master_vis = _master_agg_default
-                        else:
-                            _master_vis = st.multiselect(
-                                "Seleziona colonne:", options=_master_agg_default,
-                                default=_master_agg_default, key="master_cols_select"
-                            ) or _master_agg_default
+                        _master_vis = _master_agg_default if _show_all_master else (
+                            st.multiselect("Seleziona colonne:", options=_master_agg_default,
+                                           default=_master_agg_default, key="master_cols_select")
+                            or _master_agg_default
+                        )
                     else:
                         _show_all_master_src = st.checkbox("⭐ Tutte le colonne sorgente",
                                                             value=False, key="master_src_all")
-                        if _show_all_master_src:
-                            _master_src_vis = _master_src_cols
-                        else:
-                            _master_src_vis = st.multiselect(
-                                "Seleziona colonne sorgente:", options=_master_src_cols,
-                                default=[c for c in _master_src_preset if c in _master_src_cols],
-                                key="master_src_select"
-                            ) or _master_src_preset
+                        _master_src_vis = _master_src_col_names if _show_all_master_src else (
+                            st.multiselect("Seleziona colonne sorgente:",
+                                           options=_master_src_col_names,
+                                           default=[c for c in _master_src_preset
+                                                    if c in _master_src_col_names],
+                                           key="master_src_select")
+                            or _master_src_preset
+                        )
 
                 _master_col_cfg = {
-                    primary_col:          st.column_config.TextColumn("Elemento Master"),
-                    col_cartons:          st.column_config.NumberColumn("CT Ord",    format="%d"),
-                    col_kg:               st.column_config.NumberColumn("Kg Tot",    format="%.0f"),
-                    col_euro:             st.column_config.NumberColumn("Valore",    format="€ %.2f"),
-                    'Valore Medio €/Kg':  st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
-                    'Valore Medio €/CT':  st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
-                    '% Livello Servizio': st.column_config.ProgressColumn(
+                    primary_col:         st.column_config.TextColumn("Elemento Master"),
+                    col_cartons:         st.column_config.NumberColumn("CT Ord",    format="%d"),
+                    col_kg:              st.column_config.NumberColumn("Kg Tot",    format="%.0f"),
+                    col_euro:            st.column_config.NumberColumn("Valore",    format="€ %.2f"),
+                    'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg Med", format="€ %.2f"),
+                    'Valore Medio €/CT': st.column_config.NumberColumn("€/CT Med", format="€ %.2f"),
+                    _SVC_COL:            st.column_config.ProgressColumn(
                         "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
                     ),
                 }
 
                 if _master_view_mode == "📊 Aggregata":
                     _master_df_shown = master_df[[c for c in _master_vis if c in master_df.columns]]
-                    st.dataframe(
-                        _master_df_shown,
-                        column_config=_master_col_cfg,
-                        hide_index=True, use_container_width=True)
+                    st.dataframe(_master_df_shown, column_config=_master_col_cfg,
+                                 hide_index=True, width='stretch')
                     st.download_button(
                         "📥 Scarica Tabella Master (.xlsx)",
                         data=convert_df_to_excel(_master_df_shown),
@@ -2520,18 +2511,23 @@ if page == "📊 Vendite & Fatturazione":
                         key="btn_dl_master"
                     )
                 else:
+                    # FIX CRASH: .assign() lazy — solo quando in Righe sorgente
+                    _tree_src = (
+                        df_tree_raw.assign(**{_SVC_COL: (
+                            df_tree_raw[col_cartons_del] /
+                            df_tree_raw[col_cartons].replace(0, float('nan')) * 100
+                        ).clip(0, 100).round(1)})
+                        if _has_svc else df_tree_raw
+                    )
                     _master_src_df_shown = (
                         _tree_src[[c for c in _master_src_vis if c in _tree_src.columns]]
                         .reset_index(drop=True)
                     )
-                    st.dataframe(
-                        _master_src_df_shown,
-                        column_config={
-                            _SVC_COL: st.column_config.ProgressColumn(
-                                "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
-                            ),
-                        },
-                        hide_index=True, use_container_width=True)
+                    st.dataframe(_master_src_df_shown,
+                                 column_config={_SVC_COL: st.column_config.ProgressColumn(
+                                     "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                                 )},
+                                 hide_index=True, width='stretch')
                     st.download_button(
                         "📥 Scarica Righe Sorgente Master (.xlsx)",
                         data=convert_df_to_excel(_master_src_df_shown),
@@ -2546,6 +2542,7 @@ if page == "📊 Vendite & Fatturazione":
                     key="drill_down_selector"
                 )
                 if selected_val is not None:
+                    # Include righe con CT_consegnato=0 (tagli completi) — nessun filtro su qty
                     detail_df  = df_tree_raw[df_tree_raw[primary_col] == selected_val]
                     detail_agg = build_agg_with_ratios(
                         detail_df, secondary_col, col_cartons, col_kg, col_euro
@@ -2558,67 +2555,64 @@ if page == "📊 Vendite & Fatturazione":
                         unsafe_allow_html=True
                     )
                     # ── Mostra / Nascondi Colonne (Child) ────────────────────
-                    # Opzioni: tutte le colonne del file sorgente (detail_df)
-                    # Preset aggregata: colonne aggregate + Livello Servizio se presente
-                    _agg_default  = list(detail_agg.columns)   # include '% Livello Servizio' se calcolato
+                    _agg_default    = list(detail_agg.columns)
+                    _src_col_names  = [c for c in detail_df.columns if c != primary_col]
+                    if _has_svc and _SVC_COL not in _src_col_names:
+                        _src_col_names = _src_col_names + [_SVC_COL]
+                    _src_preset = [c for c in [secondary_col, col_cartons, col_cartons_del,
+                                               col_kg, col_euro, _SVC_COL]
+                                   if c and c in _src_col_names]
 
-                    # Calcola % Livello Servizio per riga sul sorgente child
-                    if (col_cartons_del and col_cartons_del in detail_df.columns
-                            and col_cartons in detail_df.columns):
-                        _detail_src = detail_df.copy()
-                        _detail_src[_SVC_COL] = (
-                            (_detail_src[col_cartons_del] /
-                             _detail_src[col_cartons].replace(0, float('nan'))) * 100
-                        ).clip(0, 100).round(1)
-                    else:
-                        _detail_src = detail_df
+                    # FIX NameError: default prima del blocco condizionale
+                    _child_vis     = _agg_default
+                    _child_src_vis = _src_preset or _src_col_names
 
-                    _src_all_cols = [c for c in _detail_src.columns
-                                     if c not in (primary_col,)]  # escludi solo la col di filtro
+                    # FIX stale widget keys: chiave con selected_val per reset al cambio prodotto
+                    _sv_key = str(selected_val)[:20]
                     with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
                         _view_mode = st.radio(
                             "Modalità:", ["📊 Aggregata", "📄 Righe sorgente"],
-                            horizontal=True, key="child_view_mode"
+                            horizontal=True, key=f"child_view_mode_{_sv_key}"
                         )
                         if _view_mode == "📊 Aggregata":
                             _show_all_ch = st.checkbox("⭐ Tutte le colonne aggregate",
-                                                        value=True, key="child_show_all")
-                            if _show_all_ch:
-                                _child_vis = _agg_default
-                            else:
-                                _child_vis = st.multiselect(
-                                    "Seleziona colonne:", options=_agg_default,
-                                    default=_agg_default, key="child_cols_select"
-                                ) or _agg_default
+                                                        value=True,
+                                                        key=f"child_show_all_{_sv_key}")
+                            _child_vis = _agg_default if _show_all_ch else (
+                                st.multiselect("Seleziona colonne:", options=_agg_default,
+                                               default=_agg_default,
+                                               key=f"child_cols_select_{_sv_key}")
+                                or _agg_default
+                            )
                         else:
                             _show_all_src = st.checkbox("⭐ Tutte le colonne sorgente",
-                                                         value=False, key="child_src_all")
-                            if _show_all_src:
-                                _child_src_vis = _src_all_cols
-                            else:
-                                _child_src_vis = st.multiselect(
-                                    "Seleziona colonne sorgente:", options=_src_all_cols,
-                                    default=[c for c in [secondary_col, col_cartons,
-                                                          col_kg, col_euro, _SVC_COL]
-                                             if c in _src_all_cols],
-                                    key="child_src_select"
-                                ) or _src_all_cols
+                                                         value=False,
+                                                         key=f"child_src_all_{_sv_key}")
+                            _child_src_vis = _src_col_names if _show_all_src else (
+                                st.multiselect("Seleziona colonne sorgente:",
+                                               options=_src_col_names,
+                                               default=[c for c in _src_preset
+                                                        if c in _src_col_names],
+                                               key=f"child_src_select_{_sv_key}")
+                                or _src_preset
+                            )
 
                     if _view_mode == "📊 Aggregata":
-                        _child_df_shown = detail_agg[[c for c in _child_vis if c in detail_agg.columns]]
+                        _child_df_shown = detail_agg[[c for c in _child_vis
+                                                       if c in detail_agg.columns]]
                         st.dataframe(
                             _child_df_shown,
                             column_config={
-                                secondary_col:           st.column_config.TextColumn("Dettaglio (Child)"),
-                                col_cartons:             st.column_config.NumberColumn("CT Ord",  format="%d"),
-                                col_kg:                  st.column_config.NumberColumn("Kg",      format="%.0f"),
-                                col_euro:                st.column_config.NumberColumn("Valore",  format="€ %.2f"),
-                                'Valore Medio €/Kg':     st.column_config.NumberColumn("€/Kg",   format="€ %.2f"),
-                                'Valore Medio €/CT':     st.column_config.NumberColumn("€/CT",   format="€ %.2f"),
-                                '% Livello Servizio':    st.column_config.ProgressColumn(
+                                secondary_col:       st.column_config.TextColumn("Dettaglio (Child)"),
+                                col_cartons:         st.column_config.NumberColumn("CT Ord",  format="%d"),
+                                col_kg:              st.column_config.NumberColumn("Kg",      format="%.0f"),
+                                col_euro:            st.column_config.NumberColumn("Valore",  format="€ %.2f"),
+                                'Valore Medio €/Kg': st.column_config.NumberColumn("€/Kg",   format="€ %.2f"),
+                                'Valore Medio €/CT': st.column_config.NumberColumn("€/CT",   format="€ %.2f"),
+                                _SVC_COL:            st.column_config.ProgressColumn(
                                     "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
                                 ),
-                            }, hide_index=True, use_container_width=True)
+                            }, hide_index=True, width='stretch')
                         st.download_button(
                             "📥 Scarica Dettaglio (Child) (.xlsx)",
                             data=convert_df_to_excel(_child_df_shown),
@@ -2627,18 +2621,24 @@ if page == "📊 Vendite & Fatturazione":
                             key="btn_dl_child_agg"
                         )
                     else:
+                        # FIX CRASH: lazy — .assign() solo quando in Righe sorgente
+                        _detail_src = (
+                            detail_df.assign(**{_SVC_COL: (
+                                detail_df[col_cartons_del] /
+                                detail_df[col_cartons].replace(0, float('nan')) * 100
+                            ).clip(0, 100).round(1)})
+                            if _has_svc else detail_df
+                        )
                         _child_src_df_shown = (
                             _detail_src[[c for c in _child_src_vis if c in _detail_src.columns]]
                             .reset_index(drop=True)
                         )
                         st.dataframe(
                             _child_src_df_shown,
-                            column_config={
-                                _SVC_COL: st.column_config.ProgressColumn(
-                                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
-                                ),
-                            },
-                            hide_index=True, use_container_width=True)
+                            column_config={_SVC_COL: st.column_config.ProgressColumn(
+                                "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                            )},
+                            hide_index=True, width='stretch')
                         st.download_button(
                             "📥 Scarica Righe Sorgente (.xlsx)",
                             data=convert_df_to_excel(_child_src_df_shown),
@@ -2646,6 +2646,7 @@ if page == "📊 Vendite & Fatturazione":
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="btn_dl_child_src"
                         )
+
 
                 full_flat = (
                     df_tree_raw
@@ -3117,7 +3118,7 @@ elif page == "🏷️ Analisi Customer Promo":
                             '% Normale':  st.column_config.ProgressColumn("% Normale", min_value=0, max_value=100, format="%.1f%%"),
                             '% Omaggio':  st.column_config.NumberColumn("% Omag",   format="%.1f%%"),
                             _COL_EU:    st.column_config.NumberColumn("Fatturato €", format="€ %.2f"),
-                        }, hide_index=True, use_container_width=True)
+                        }, hide_index=True, width='stretch')
                     # Download Excel
                     if not _tbl_final.empty:
                         st.download_button(
@@ -3205,7 +3206,7 @@ elif page == "🏷️ Analisi Customer Promo":
                         p_start: st.column_config.DateColumn("Inizio Sell-In", format="DD/MM/YYYY"),
                     },
                     hide_index=True, height=500
-                , use_container_width=True)
+                , width='stretch')
                 st.download_button(
                     "📥 Scarica Report Promo Excel (.xlsx)",
                     data=convert_df_to_excel(df_p_show),
@@ -3884,7 +3885,7 @@ elif page == "🏭 Analisi Acquisti":
             st.dataframe(
                 df_final,
                 column_config=col_cfg, height=520, hide_index=True
-            , use_container_width=True)
+            , width='stretch')
             st.download_button(
                 "📥 Scarica Report Acquisti (.xlsx)",
                 data=convert_df_to_excel(df_final),
