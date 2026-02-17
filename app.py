@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v92.0 - Master expander Aggregata+Righe sorgente (tutte colonne df_tree_raw); fix colonne sorgente selezionabili Master: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v93.0 - % Livello Servizio per riga in Righe sorgente Master e Child; ProgressColumn in sorgente; _SVC_COL unificato: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v92.0",
+    page_title="EITA Analytics Pro v93.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2446,13 +2446,26 @@ if page == "📊 Vendite & Fatturazione":
 
                 # ── Mostra / Nascondi Colonne — Tabella Master ───────────────
                 # Aggregata: colonne aggregate calcolate (include % Livello Servizio)
-                # Righe sorgente: tutte le colonne di df_tree_raw (file originale)
+                # Righe sorgente: df_tree_raw + % Livello Servizio per riga se disponibile
                 _master_agg_default = list(master_df.columns)
-                _master_src_cols    = list(df_tree_raw.columns)  # tutte le colonne sorgente
-                _master_src_preset  = [c for c in [primary_col, secondary_col,
-                                                    col_cartons, col_cartons_del,
-                                                    col_kg, col_euro]
-                                        if c and c in _master_src_cols]
+
+                # Calcola % Livello Servizio per riga sul sorgente (Consegnato/Ordinato)
+                _SVC_COL = '% Livello Servizio'
+                if (col_cartons_del and col_cartons_del in df_tree_raw.columns
+                        and col_cartons in df_tree_raw.columns):
+                    _tree_src = df_tree_raw.copy()
+                    _tree_src[_SVC_COL] = (
+                        (_tree_src[col_cartons_del] /
+                         _tree_src[col_cartons].replace(0, float('nan'))) * 100
+                    ).clip(0, 100).round(1)
+                else:
+                    _tree_src = df_tree_raw
+
+                _master_src_cols   = list(_tree_src.columns)           # include % Livello Servizio
+                _master_src_preset = [c for c in [primary_col, secondary_col,
+                                                   col_cartons, col_cartons_del,
+                                                   col_kg, col_euro, _SVC_COL]
+                                      if c and c in _master_src_cols]
 
                 with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
                     _master_view_mode = st.radio(
@@ -2508,11 +2521,16 @@ if page == "📊 Vendite & Fatturazione":
                     )
                 else:
                     _master_src_df_shown = (
-                        df_tree_raw[[c for c in _master_src_vis if c in df_tree_raw.columns]]
+                        _tree_src[[c for c in _master_src_vis if c in _tree_src.columns]]
                         .reset_index(drop=True)
                     )
                     st.dataframe(
                         _master_src_df_shown,
+                        column_config={
+                            _SVC_COL: st.column_config.ProgressColumn(
+                                "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                            ),
+                        },
                         hide_index=True, use_container_width=True)
                     st.download_button(
                         "📥 Scarica Righe Sorgente Master (.xlsx)",
@@ -2543,7 +2561,19 @@ if page == "📊 Vendite & Fatturazione":
                     # Opzioni: tutte le colonne del file sorgente (detail_df)
                     # Preset aggregata: colonne aggregate + Livello Servizio se presente
                     _agg_default  = list(detail_agg.columns)   # include '% Livello Servizio' se calcolato
-                    _src_all_cols = [c for c in detail_df.columns
+
+                    # Calcola % Livello Servizio per riga sul sorgente child
+                    if (col_cartons_del and col_cartons_del in detail_df.columns
+                            and col_cartons in detail_df.columns):
+                        _detail_src = detail_df.copy()
+                        _detail_src[_SVC_COL] = (
+                            (_detail_src[col_cartons_del] /
+                             _detail_src[col_cartons].replace(0, float('nan'))) * 100
+                        ).clip(0, 100).round(1)
+                    else:
+                        _detail_src = detail_df
+
+                    _src_all_cols = [c for c in _detail_src.columns
                                      if c not in (primary_col,)]  # escludi solo la col di filtro
                     with st.expander("📋 Mostra / Nascondi Colonne", expanded=False):
                         _view_mode = st.radio(
@@ -2569,7 +2599,8 @@ if page == "📊 Vendite & Fatturazione":
                                 _child_src_vis = st.multiselect(
                                     "Seleziona colonne sorgente:", options=_src_all_cols,
                                     default=[c for c in [secondary_col, col_cartons,
-                                                          col_kg, col_euro] if c in _src_all_cols],
+                                                          col_kg, col_euro, _SVC_COL]
+                                             if c in _src_all_cols],
                                     key="child_src_select"
                                 ) or _src_all_cols
 
@@ -2597,11 +2628,16 @@ if page == "📊 Vendite & Fatturazione":
                         )
                     else:
                         _child_src_df_shown = (
-                            detail_df[[c for c in _child_src_vis if c in detail_df.columns]]
+                            _detail_src[[c for c in _child_src_vis if c in _detail_src.columns]]
                             .reset_index(drop=True)
                         )
                         st.dataframe(
                             _child_src_df_shown,
+                            column_config={
+                                _SVC_COL: st.column_config.ProgressColumn(
+                                    "🎯 Livello Servizio", min_value=0, max_value=100, format="%.1f%%"
+                                ),
+                            },
                             hide_index=True, use_container_width=True)
                         st.download_button(
                             "📥 Scarica Righe Sorgente (.xlsx)",
@@ -3864,4 +3900,3 @@ elif page == "🏭 Analisi Acquisti":
                 "I dati non vengono condivisi con terze parti né utilizzati per finalità diverse "
                 "da quelle dichiarate. Responsabile del trattamento: EITA S.p.A."
             )
-
