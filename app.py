@@ -15,10 +15,10 @@ import time
 import google.generativeai as genai
 
 # ==========================================================================
-# 1. CONFIGURAZIONE & STILE (v95.0 - Fix SVC valori vuoti in Righe sorgente: np.where su int64 (pandas 2.x replace(0,nan) inaffidabile); fix pd.to_datetime format=mixed; zero-delivery rows verificati OK: contesto AI caricato prima di render_ai_assistant, df unico globale)
+# 1. CONFIGURAZIONE & STILE (v96.0 - Fix use_container_width in st.plotly_chart (Streamlit 1.54 width=stretch); zero warning loop in idle heartbeat: contesto AI caricato prima di render_ai_assistant, df unico globale)
 # ==========================================================================
 st.set_page_config(
-    page_title="EITA Analytics Pro v95.0",
+    page_title="EITA Analytics Pro v96.0",
     page_icon="🖥️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -929,7 +929,7 @@ def _plot(fig, key: str = None, allow_zoom: bool = None) -> None:
         fig,
         config=cfg,
         key=key,
-        use_container_width=True,
+        width='stretch',
     )
 
 
